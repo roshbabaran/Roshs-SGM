@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "SGM Pocket",
+    "slug": "sgm-pocket",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "scheme": "sgmpocket",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["android", "ios"],
+    "ios": {
+      "bundleIdentifier": "ph.sibugaygas.sgmpocket",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "ph.sibugaygas.sgmpocket",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0F1B33"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "backgroundColor": "#0F1B33"
+        }
+      ]
+    ],
+    "experiments": {
+      "reactCompiler": true
+    }
+  }
+}

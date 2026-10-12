@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# SGM Pocket native folders made by "expo prebuild" (they are generated from app.json)
+apps/pocket/android/
+apps/pocket/ios/
+
+# SGM Desk build output
+apps/desk/build/
+apps/desk/release/
+
+# Local settings (server address, keys)
+.env*.local
+
+# Logs, test reports and OS files
+*.log
+npm-debug.*
+coverage/
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json

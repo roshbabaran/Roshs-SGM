@@ -1,0 +1,21 @@
+import type { Permission } from '@sgm/core';
+import type { IconName } from '@sgm/ui';
+
+export interface Page {
+  href: string;
+  label: string;
+  icon: IconName;
+  /** Who sees the page in the menu. Settings is for everyone (sign out, sync, device ID). */
+  permission?: Permission;
+}
+
+/** SGM Desk's sidebar menu, in order. Ctrl+1, Ctrl+2... open the pages a person can see. */
+export const PAGES: Page[] = [
+  { href: '/', label: 'Dashboard', icon: 'grid-outline', permission: 'dashboard.view' },
+  { href: '/pos', label: 'Point of sale', icon: 'cart-outline', permission: 'pos.sell' },
+  { href: '/inventory', label: 'Inventory', icon: 'cube-outline', permission: 'inventory.view' },
+  { href: '/sales', label: 'Sales', icon: 'receipt-outline', permission: 'sales.view' },
+  { href: '/reports', label: 'Reports', icon: 'bar-chart-outline', permission: 'reports.view' },
+  { href: '/users', label: 'Users', icon: 'people-outline', permission: 'users.manage' },
+  { href: '/settings', label: 'Settings', icon: 'settings-outline' },
+];

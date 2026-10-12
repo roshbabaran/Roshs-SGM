@@ -1,0 +1,30 @@
+# Builds the SGM Desk installer for Windows (run "npm run desk:dist" from the repo root).
+# The installer lands in apps/desk/release/.
+appId: ph.sibugaygas.sgmdesk
+productName: SGM Desk
+copyright: Copyright © 2026 Sibugay Gas Marketing
+directories:
+  # Made by scripts/build-electron.mjs: the bundled Electron code plus the screens.
+  app: build/app
+  output: release
+  buildResources: build-resources
+npmRebuild: false
+# Everything the app needs is already bundled into build/app, so no node_modules are shipped.
+files:
+  - "**/*"
+  - "!**/node_modules/**"
+win:
+  target: nsis
+  icon: build-resources/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: SGM Desk
+  artifactName: SGM-Desk-Setup-${version}.${ext}
+# Automatic updates are off until there is somewhere to publish new versions.
+# To turn them on with GitHub Releases, replace "null" with:
+#   provider: github
+#   owner: NathBajamunde
+#   repo: SGM-Desktop-Mobile
+publish: null
