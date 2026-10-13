@@ -1,8 +1,19 @@
 import { LINE_TYPE_LABELS } from './cart';
 import { BUSINESS, RECEIPT_FOOTER } from './config';
 import { formatDateTime } from './dates';
-import { PAYMENT_LABELS, type Sale } from './models';
+import { PAYMENT_LABELS, type Sale, type SaleLine, type SaleLineType } from './models';
 import { formatPeso } from './money';
+
+/** One printed row under an item: "2 x ₱950.00 (refill)" and its amount (blank for a set's contents). */
+export interface ReceiptRow {
+  detail: string;
+  amount: string;
+}
+
+export interface ReceiptLine {
+  name: string;
+  rows: ReceiptRow[];
+}
 
 /** A receipt ready to show or print, with every amount already formatted. */
 export interface Receipt {
@@ -13,19 +24,55 @@ export interface Receipt {
   dateTime: string;
   locationName: string;
   cashierName: string;
-  lines: { name: string; detail: string; amount: string }[];
+  /** The borrower, for sales made in the Borrowing window. */
+  customer?: string;
+  lines: ReceiptLine[];
   total: string;
+  /** Put on the customer's account: nothing was paid now, so there is no change. */
+  onAccount: boolean;
   paymentLabel: string;
   tendered: string;
   change: string;
   reference?: string;
+  /** Reminders printed above the footer, e.g. a borrowed cylinder to bring back. */
+  notes: string[];
   footer: string[];
   voided: boolean;
 }
 
 export type PaperWidth = 58 | 80;
 
+const typeNote = (type: SaleLineType) => (type === 'item' ? '' : ` (${LINE_TYPE_LABELS[type].toLowerCase()})`);
+
+/** A sale line as printed. A new cylinder shows the cylinder and its content separately; a set lists what it contains. */
+export function receiptLine(line: SaleLine): ReceiptLine {
+  if (line.type === 'set') {
+    return {
+      name: `${line.name} (set)`,
+      rows: [
+        { detail: `${line.qty} x ${formatPeso(line.unitPrice)}`, amount: formatPeso(line.amount) },
+        ...line.items.map((item) => ({ detail: `- ${item.qty * line.qty} x ${item.name}${typeNote(item.type)}`, amount: '' })),
+      ],
+    };
+  }
+  if (line.type === 'new' && line.contentPrice !== undefined) {
+    const cylinder = line.unitPrice - line.contentPrice;
+    return {
+      name: `${line.name} (new cylinder)`,
+      rows: [
+        { detail: `Cylinder ${line.qty} x ${formatPeso(cylinder)}`, amount: formatPeso(cylinder * line.qty) },
+        { detail: `Content ${line.qty} x ${formatPeso(line.contentPrice)}`, amount: formatPeso(line.contentPrice * line.qty) },
+      ],
+    };
+  }
+  return {
+    name: line.name,
+    rows: [{ detail: `${line.qty} x ${formatPeso(line.unitPrice)}${typeNote(line.type)}`, amount: formatPeso(line.amount) }],
+  };
+}
+
 export function buildReceipt(sale: Sale, names: { locationName: string; cashierName: string }): Receipt {
+  const borrowed = sale.lines.filter((line) => line.type === 'borrow');
   return {
     businessName: BUSINESS.name,
     address: BUSINESS.address,
@@ -34,21 +81,28 @@ export function buildReceipt(sale: Sale, names: { locationName: string; cashierN
     dateTime: formatDateTime(sale.createdAt),
     locationName: names.locationName,
     cashierName: names.cashierName,
-    lines: sale.lines.map((line) => ({
-      name: line.name,
-      detail:
-        `${line.qty} x ${formatPeso(line.unitPrice)}` +
-        (line.type === 'item' ? '' : ` (${LINE_TYPE_LABELS[line.type].toLowerCase()})`),
-      amount: formatPeso(line.amount),
-    })),
+    customer: sale.borrowerName,
+    lines: sale.lines.map(receiptLine),
     total: formatPeso(sale.total),
+    onAccount: sale.payment.method === 'credit',
     paymentLabel: PAYMENT_LABELS[sale.payment.method],
     tendered: formatPeso(sale.payment.tendered),
     change: formatPeso(sale.payment.change),
     reference: sale.payment.reference,
+    notes: borrowed.map((line) => `Borrowed cylinder: ${line.qty} x ${line.name}. Please return it.`),
     footer: RECEIPT_FOOTER,
     voided: sale.status === 'voided',
   };
+}
+
+/** The payment rows under TOTAL: what was paid and the change, or the amount put on account. */
+export function paymentRows(receipt: Receipt): ReceiptRow[] {
+  if (receipt.onAccount) return [{ detail: receipt.paymentLabel, amount: receipt.total }];
+  return [
+    { detail: receipt.paymentLabel, amount: receipt.tendered },
+    ...(receipt.reference ? [{ detail: 'Ref no.', amount: receipt.reference }] : []),
+    { detail: 'Change', amount: receipt.change },
+  ];
 }
 
 /** Characters per line on common thermal printers (Font A). */
@@ -73,31 +127,27 @@ export function receiptText(receipt: Receipt, width = 32): string {
     `Receipt: ${receipt.receiptNo}`,
     receipt.dateTime,
     `${receipt.locationName} / ${receipt.cashierName}`,
+    ...(receipt.customer ? [`Customer: ${receipt.customer}`] : []),
     rule,
   ];
   if (receipt.voided) out.push(center('*** VOIDED ***'), rule);
   for (const line of receipt.lines) {
-    out.push(line.name, row(`  ${line.detail}`, line.amount));
+    out.push(line.name, ...line.rows.map((r) => (r.amount ? row(`  ${r.detail}`, r.amount) : `  ${r.detail}`)));
   }
-  out.push(rule, row('TOTAL', receipt.total), row(receipt.paymentLabel, receipt.tendered));
-  if (receipt.reference) out.push(row('Ref no.', receipt.reference));
-  out.push(row('Change', receipt.change), rule, ...receipt.footer.map(center));
+  out.push(rule, row('TOTAL', receipt.total), ...paymentRows(receipt).map((r) => row(r.detail, r.amount)), rule);
+  if (receipt.notes.length > 0) out.push(...receipt.notes, rule);
+  out.push(...receipt.footer.map(center));
   return out.join('\n');
 }
 
-const escapeHtml = (text: string) =>
+export const escapeHtml = (text: string) =>
   text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
 
 /** HTML sized for a thermal printer roll; used by both apps' print functions. */
 export function receiptHtml(receipt: Receipt, paperWidthMm: PaperWidth = 58): string {
   const e = escapeHtml;
-  const lines = receipt.lines
-    .map(
-      (line) => `
-      <div class="item">${e(line.name)}</div>
-      <div class="row"><span>${e(line.detail)}</span><span>${e(line.amount)}</span></div>`,
-    )
-    .join('');
+  const row = (r: ReceiptRow) => `<div class="row"><span>${e(r.detail)}</span><span>${e(r.amount)}</span></div>`;
+  const lines = receipt.lines.map((line) => `<div class="item">${e(line.name)}</div>${line.rows.map(row).join('')}`).join('');
   return `<!doctype html>
 <html>
 <head>
@@ -125,15 +175,15 @@ export function receiptHtml(receipt: Receipt, paperWidthMm: PaperWidth = 58): st
   <div>Receipt: ${e(receipt.receiptNo)}</div>
   <div>${e(receipt.dateTime)}</div>
   <div>${e(receipt.locationName)} / ${e(receipt.cashierName)}</div>
+  ${receipt.customer ? `<div>Customer: ${e(receipt.customer)}</div>` : ''}
   <div class="rule"></div>
   ${receipt.voided ? '<div class="center void">*** VOIDED ***</div><div class="rule"></div>' : ''}
   ${lines}
   <div class="rule"></div>
   <div class="row total"><span>TOTAL</span><span>${e(receipt.total)}</span></div>
-  <div class="row"><span>${e(receipt.paymentLabel)}</span><span>${e(receipt.tendered)}</span></div>
-  ${receipt.reference ? `<div class="row"><span>Ref no.</span><span>${e(receipt.reference)}</span></div>` : ''}
-  <div class="row"><span>Change</span><span>${e(receipt.change)}</span></div>
+  ${paymentRows(receipt).map(row).join('')}
   <div class="rule"></div>
+  ${receipt.notes.length > 0 ? `${receipt.notes.map((note) => `<div>${e(note)}</div>`).join('')}<div class="rule"></div>` : ''}
   ${receipt.footer.map((line) => `<div class="center">${e(line)}</div>`).join('')}
 </body>
 </html>`;

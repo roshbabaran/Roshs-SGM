@@ -3,6 +3,9 @@
  * window, measured, and printed on a page exactly as long as the receipt, so the
  * printer doesn't feed blank paper. With a printer chosen in Settings it prints
  * straight away; otherwise Windows shows its print dialog.
+ *
+ * Reports print on A4 through the Windows print dialog, where the person picks
+ * the office printer (or "Microsoft Print to PDF").
  */
 import { BrowserWindow, type WebContents } from 'electron';
 
@@ -43,6 +46,28 @@ export async function printReceipt(html: string, options: { paperWidthMm: 58 | 8
           else reject(new Error(/cancel/i.test(failureReason) ? 'Printing was cancelled.' : failureReason || 'The printer did not respond.'));
         },
       );
+    });
+  } finally {
+    window.destroy();
+  }
+}
+
+/** Resolves "sent" once Windows has the pages, or "cancelled" when the person closes the print dialog. */
+export async function printDocument(html: string): Promise<'sent' | 'cancelled'> {
+  const window = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+  });
+  try {
+    await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    return await new Promise<'sent' | 'cancelled'>((resolve, reject) => {
+      window.webContents.print({ silent: false, printBackground: true, pageSize: 'A4' }, (success, failureReason) => {
+        if (success) resolve('sent');
+        else if (/cancel/i.test(failureReason)) resolve('cancelled');
+        else reject(new Error(failureReason && failureReason !== 'failed' ? failureReason : 'Windows could not send it to the printer.'));
+      });
     });
   } finally {
     window.destroy();

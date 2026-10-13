@@ -214,7 +214,7 @@ const styles = StyleSheet.create({
   segmentSm: { paddingHorizontal: spacing.sm, paddingVertical: 3 },
   segmentMd: { paddingHorizontal: spacing.md, paddingVertical: 6 },
   screenHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flexWrap: 'wrap' },
-  headerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flexWrap: 'wrap', flexShrink: 1, maxWidth: '100%' },
   stat: {
     flexGrow: 1,
     flexBasis: 200,

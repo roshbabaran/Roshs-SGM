@@ -34,6 +34,11 @@ export function dayRange(from: string, to: string): string[] {
   return days;
 }
 
+/** Calendar days from a moment to now, in the device's time zone: 0 today, 1 yesterday. */
+export function daysAgo(iso: string, now = new Date()): number {
+  return Math.round((parseDay(localDay(now)).getTime() - parseDay(localDay(iso)).getTime()) / 86_400_000);
+}
+
 /** "Oct 12" */
 export function formatDay(day: string): string {
   const d = parseDay(day);

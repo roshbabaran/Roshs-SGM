@@ -39,6 +39,7 @@ export function TextField({ label, error, hint, prefix, containerStyle, ref, onF
         ) : null}
         <TextInput
           ref={ref}
+          accessibilityLabel={label}
           placeholderTextColor={colors.textMuted}
           multiline={multiline}
           onFocus={(event) => {

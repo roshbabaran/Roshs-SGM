@@ -25,6 +25,8 @@ import { useToast } from '../Toast';
 import { useZodForm } from '../useZodForm';
 import { ReceiptDialog } from './receipts';
 
+const itemsText = (sale: Sale) => sale.lines.map((l) => `${l.qty}× ${l.name}`).join(', ');
+
 export function SalesScreen() {
   const work = useWork();
   const { colors } = useTheme();
@@ -50,9 +52,24 @@ export function SalesScreen() {
   const columns: Column<Sale>[] = [
     { key: 'receipt', title: 'Receipt', width: 150, text: (s) => s.receiptNo },
     { key: 'time', title: 'Time', width: 190, text: (s) => formatDateTime(s.createdAt), sortValue: (s) => s.createdAt },
-    { key: 'items', title: 'Items', flex: 1, text: (s) => s.lines.map((l) => `${l.qty}× ${l.name}`).join(', ') },
+    {
+      key: 'items',
+      title: 'Items',
+      flex: 1,
+      text: (s) => `${itemsText(s)} ${s.borrowerName ?? ''}`,
+      render: (s) => (
+        <View style={styles.cellText}>
+          <Text numberOfLines={1}>{itemsText(s)}</Text>
+          {s.borrowerName ? (
+            <Text variant="small" muted numberOfLines={1}>
+              Borrower: {s.borrowerName}
+            </Text>
+          ) : null}
+        </View>
+      ),
+    },
     { key: 'total', title: 'Total', width: 120, align: 'right', text: (s) => formatPeso(s.total), sortValue: (s) => s.total },
-    { key: 'payment', title: 'Payment', width: 100, text: (s) => PAYMENT_LABELS[s.payment.method] },
+    { key: 'payment', title: 'Payment', width: 120, text: (s) => PAYMENT_LABELS[s.payment.method] },
     { key: 'cashier', title: 'Cashier', width: 150, text: (s) => cashier(s.cashierId) },
     {
       key: 'status',
@@ -85,9 +102,9 @@ export function SalesScreen() {
           columns={columns}
           rowKey={(s) => s.id}
           onRowPress={setSelected}
-          searchPlaceholder="Search receipts, items or cashier"
+          searchPlaceholder="Search receipts, items, borrowers or cashier"
           emptyText="No sales on these dates."
-          minWidth={1000}
+          minWidth={1020}
         />
       </Card>
 
@@ -157,6 +174,7 @@ function VoidDialog({ sale, onClose }: { sale: Sale | null; onClose: () => void 
     >
       <Text>
         The sale stays in the records marked as voided, and its {sale ? formatPeso(sale.total) : ''} is taken out of the totals. The stock goes back on the shelf.
+        {sale?.borrowerName ? ` Anything it put on ${sale.borrowerName}'s account, or lent to them, is taken off it too.` : ''}
       </Text>
       <TextField
         label="Reason"
@@ -176,4 +194,6 @@ const styles = StyleSheet.create({
   filters: { flexDirection: 'row', gap: spacing.md, flexWrap: 'wrap' },
   dateField: { width: 200 },
   statusCell: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  /** Fills the cell, so long text is cut short instead of running into the next column. */
+  cellText: { alignSelf: 'stretch' },
 });

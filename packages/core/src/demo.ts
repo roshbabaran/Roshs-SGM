@@ -6,8 +6,9 @@
 import { ApiError, type ApiClient, type LoginResult, type PullResult, type PushResult } from './api';
 import { priceCart, saleMovements, type CartLine } from './cart';
 import { levelOf, sellable, stockByProduct } from './ledger';
-import type { Location, OutboxEntry, Product, Sale, StockMovement, User } from './models';
+import type { Borrower, LoanEntry, Location, OutboxEntry, Payment, Product, ProductSet, Sale, StockMovement, User } from './models';
 import { peso } from './money';
+import { findShortages } from './operations';
 import { put, type ObservableStore, type StoreOp } from './store';
 
 export const DEMO_LOCATIONS: Location[] = [
@@ -85,6 +86,40 @@ export const DEMO_PRODUCTS: Product[] = [
   accessory('acc-stove', 'Single-burner stove', 1200, 2),
 ];
 
+/** Sample bundles; the owner makes the real ones on the Products page. */
+export const DEMO_SETS: ProductSet[] = [
+  {
+    id: 'set-starter-11',
+    name: 'Starter kit 11 kg',
+    items: [
+      { productId: 'lpg-a-11', type: 'new', qty: 1 },
+      { productId: 'acc-regulator', type: 'item', qty: 1 },
+      { productId: 'acc-hose', type: 'item', qty: 1 },
+    ],
+    price: peso(3250),
+    active: true,
+  },
+  {
+    id: 'set-kitchen',
+    name: 'Kitchen set',
+    items: [
+      { productId: 'lpg-a-11', type: 'new', qty: 1 },
+      { productId: 'acc-stove', type: 'item', qty: 1 },
+      { productId: 'acc-regulator', type: 'item', qty: 1 },
+      { productId: 'acc-hose', type: 'item', qty: 1 },
+    ],
+    price: peso(4350),
+    active: true,
+  },
+  {
+    id: 'set-two-refills',
+    name: 'Two 11 kg refills',
+    items: [{ productId: 'lpg-a-11', type: 'refill', qty: 2 }],
+    price: peso(1880),
+    active: true,
+  },
+];
+
 /** [productId, full (or units), empty] per location. */
 const OPENING_STOCK: Record<string, [string, number, number][]> = {
   'branch-main': [
@@ -127,7 +162,7 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-/** Fills an empty local database with sample branches, users, products, stock and a week of sales. */
+/** Fills an empty local database with sample branches, users, products, stock, a week of sales and some borrowing. */
 export async function seedDemoData(store: ObservableStore, now = new Date()): Promise<boolean> {
   if ((await store.list('products')).length > 0) return false;
 
@@ -135,6 +170,7 @@ export async function seedDemoData(store: ObservableStore, now = new Date()): Pr
   DEMO_LOCATIONS.forEach((l) => ops.push(put('locations', l)));
   DEMO_USERS.forEach((u) => ops.push(put('users', u)));
   DEMO_PRODUCTS.forEach((p) => ops.push(put('products', p)));
+  DEMO_SETS.forEach((s) => ops.push(put('sets', s)));
 
   const day = 86_400_000;
   const openingAt = new Date(now.getTime() - 8 * day).toISOString();
@@ -161,11 +197,34 @@ export async function seedDemoData(store: ObservableStore, now = new Date()): Pr
     }
   }
 
+  const productsById = new Map(DEMO_PRODUCTS.map((p) => [p.id, p]));
+  let seq = 0;
+  const addSale = (cart: CartLine[], at: Date, payment: (total: number) => Payment, borrower?: Borrower): Sale => {
+    const { lines, total } = priceCart(cart, productsById);
+    const createdAt = at.toISOString();
+    seq += 1;
+    const sale: Sale = {
+      id: `demo-sale-${seq}`,
+      receiptNo: `DEMO-${seq.toString().padStart(6, '0')}`,
+      locationId: 'branch-main',
+      deviceId: 'demo-seed',
+      cashierId: 'u-cashier',
+      lines,
+      total,
+      payment: payment(total),
+      status: 'completed',
+      ...(borrower ? { borrowerId: borrower.id, borrowerName: borrower.name } : {}),
+      createdAt,
+      receivedAt: createdAt,
+    };
+    ops.push(put('sales', sale));
+    movements.push(...saleMovements(sale, 'u-cashier').map((m) => ({ ...m, receivedAt: createdAt })));
+    return sale;
+  };
+
   // A week of sample sales at the main branch, so the dashboard and reports have something to show.
   const random = seededRandom(42);
-  const productsById = new Map(DEMO_PRODUCTS.map((p) => [p.id, p]));
   const weighted = ['lpg-a-11', 'lpg-a-11', 'lpg-a-11', 'lpg-b-11', 'lpg-b-11', 'lpg-a-2.7', 'lpg-a-22', 'acc-regulator', 'acc-hose', 'lpg-a-50'];
-  let seq = 0;
   for (let daysAgo = 6; daysAgo >= 0; daysAgo--) {
     const count = daysAgo === 0 ? 3 : 4 + Math.floor(random() * 5);
     const start = new Date(now.getTime() - daysAgo * day);
@@ -181,38 +240,75 @@ export async function seedDemoData(store: ObservableStore, now = new Date()): Pr
         { productId: product.id, type: product.kind === 'accessory' ? 'item' : random() < 0.8 ? 'refill' : 'new', qty },
       ];
       // Keep sample stock above the low-stock line, except 50 kg, so the dashboard shows one warning.
-      const available = sellable(product, levelOf(stockByProduct(movements, 'branch-main'), product.id));
+      const levels = stockByProduct(movements, 'branch-main');
       const floor = product.id === 'lpg-a-50' ? 0 : product.lowStockAt + 1;
-      if (available - qty < floor) continue;
+      if (sellable(product, levelOf(levels, product.id)) - qty < floor) continue;
+      if (findShortages(cart, productsById, levels).length > 0) continue;
 
-      const { lines, total } = priceCart(cart, productsById);
       const cash = random() < 0.75;
-      const tendered = cash ? Math.ceil(total / 10_000) * 10_000 : total;
-      const createdAt = at.toISOString();
-      seq += 1;
-      const sale: Sale = {
-        id: `demo-sale-${seq}`,
-        receiptNo: `DEMO-${seq.toString().padStart(6, '0')}`,
-        locationId: 'branch-main',
-        deviceId: 'demo-seed',
-        cashierId: 'u-cashier',
-        lines,
-        total,
-        payment: {
+      addSale(cart, at, (total) => {
+        const tendered = cash ? Math.ceil(total / 10_000) * 10_000 : total;
+        return {
           method: cash ? 'cash' : 'gcash',
           amount: total,
           tendered,
           change: tendered - total,
           reference: cash ? undefined : `GC${(1_000_000 + seq * 7919).toString()}`,
-        },
-        status: 'completed',
-        createdAt,
-        receivedAt: createdAt,
-      };
-      ops.push(put('sales', sale));
-      movements.push(...saleMovements(sale, 'u-cashier').map((m) => ({ ...m, receivedAt: createdAt })));
+        };
+      });
     }
   }
+
+  // Sample borrowing: a refill on credit, part paid; a cylinder lent; a cylinder lent with its refill on account.
+  const daysAgoAt = (days: number, hour: number) => {
+    const at = new Date(now.getTime() - days * day);
+    at.setHours(hour, 15, 0, 0);
+    return at;
+  };
+  const borrower = (id: string, name: string, phone: string, since: Date): Borrower => ({
+    id,
+    name,
+    phone,
+    createdAt: since.toISOString(),
+    receivedAt: since.toISOString(),
+  });
+  const loans: LoanEntry[] = [];
+  const loan = (who: Borrower, at: Date, fields: Pick<LoanEntry, 'kind' | 'amount'> & Partial<LoanEntry>) =>
+    loans.push({
+      id: `demo-loan-${loans.length + 1}`,
+      borrowerId: who.id,
+      borrowerName: who.name,
+      locationId: 'branch-main',
+      userId: 'u-cashier',
+      deviceId: 'demo-seed',
+      occurredAt: at.toISOString(),
+      createdAt: at.toISOString(),
+      receivedAt: at.toISOString(),
+      ...fields,
+    });
+  const credit = (total: number): Payment => ({ method: 'credit', amount: total, tendered: 0, change: 0 });
+  const cashExact = (total: number): Payment => ({ method: 'cash', amount: total, tendered: total, change: 0 });
+
+  const maria = borrower('demo-borrower-maria', 'Maria Santos', '0917 555 0142', daysAgoAt(5, 9));
+  const onCredit = addSale([{ productId: 'lpg-a-11', type: 'refill', qty: 1 }], daysAgoAt(5, 9), credit, maria);
+  loan(maria, daysAgoAt(5, 9), { kind: 'credit', amount: onCredit.total, saleId: onCredit.id });
+  loan(maria, daysAgoAt(2, 16), {
+    kind: 'payment',
+    amount: -peso(500),
+    payment: { method: 'cash', amount: peso(500), tendered: peso(500), change: 0 },
+  });
+
+  const jun = borrower('demo-borrower-jun', 'Jun Dela Cruz', '0918 555 0199', daysAgoAt(3, 11));
+  const lent = addSale([{ productId: 'lpg-a-2.7', type: 'borrow', qty: 1 }], daysAgoAt(3, 11), cashExact, jun);
+  loan(jun, daysAgoAt(3, 11), { kind: 'cylinder_out', amount: 0, productId: 'lpg-a-2.7', qty: 1, saleId: lent.id });
+
+  const rosa = borrower('demo-borrower-rosa', 'Rosa Reyes', '0927 555 0123', daysAgoAt(1, 14));
+  const both = addSale([{ productId: 'lpg-b-11', type: 'borrow', qty: 1 }], daysAgoAt(1, 14), credit, rosa);
+  loan(rosa, daysAgoAt(1, 14), { kind: 'credit', amount: both.total, saleId: both.id });
+  loan(rosa, daysAgoAt(1, 14), { kind: 'cylinder_out', amount: 0, productId: 'lpg-b-11', qty: 1, saleId: both.id });
+
+  [maria, jun, rosa].forEach((b) => ops.push(put('borrowers', b)));
+  loans.forEach((l) => ops.push(put('loans', l)));
   movements.forEach((m) => ops.push(put('movements', m)));
   await store.batch(ops);
   return true;

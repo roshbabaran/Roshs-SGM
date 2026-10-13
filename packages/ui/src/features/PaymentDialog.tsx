@@ -23,12 +23,18 @@ export function PaymentDialog({
   total,
   onCancel,
   onConfirm,
+  title = 'Payment',
+  confirmLabel = 'Complete sale',
+  cancelLabel = 'Back to sale',
 }: {
   visible: boolean;
   total: Centavos;
   onCancel: () => void;
   /** Saves the sale; if it throws, the message is shown here and nothing is lost. */
   onConfirm: (payment: Payment) => Promise<void>;
+  title?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
 }) {
   const { colors } = useTheme();
   const schema = useMemo(() => paymentFormSchema(total), [total]);
@@ -62,14 +68,14 @@ export function PaymentDialog({
   return (
     <Dialog
       visible={visible}
-      title="Payment"
+      title={title}
       onClose={onCancel}
       width={460}
       dismissable={!busy}
       actions={
         <>
-          <Button title="Back to sale" variant="secondary" onPress={onCancel} disabled={busy} />
-          <Button title="Complete sale" icon="checkmark" onPress={submit} loading={busy} />
+          <Button title={cancelLabel} variant="secondary" onPress={onCancel} disabled={busy} />
+          <Button title={confirmLabel} icon="checkmark" onPress={submit} loading={busy} />
         </>
       }
     >

@@ -1,4 +1,4 @@
-import type { Receipt } from '@sgm/core';
+import { paymentRows, type Receipt } from '@sgm/core';
 import { StyleSheet, View } from 'react-native';
 
 import { Text } from './Text';
@@ -9,7 +9,7 @@ const INK = '#000000';
 function Line({ left, right, bold }: { left: string; right?: string; bold?: boolean }) {
   return (
     <View style={styles.row}>
-      <Text style={[styles.mono, bold && styles.bold]} color={INK}>
+      <Text style={[styles.mono, styles.shrink, bold && styles.bold]} color={INK}>
         {left}
       </Text>
       {right ? (
@@ -44,6 +44,7 @@ export function ReceiptPreview({ receipt }: { receipt: Receipt }) {
       <Line left={`Receipt: ${receipt.receiptNo}`} />
       <Line left={receipt.dateTime} />
       <Line left={`${receipt.locationName} / ${receipt.cashierName}`} />
+      {receipt.customer ? <Line left={`Customer: ${receipt.customer}`} /> : null}
       <Rule />
       {receipt.voided ? (
         <>
@@ -56,15 +57,25 @@ export function ReceiptPreview({ receipt }: { receipt: Receipt }) {
       {receipt.lines.map((line, i) => (
         <View key={i}>
           <Line left={line.name} />
-          <Line left={`  ${line.detail}`} right={line.amount} />
+          {line.rows.map((row, j) => (
+            <Line key={j} left={`  ${row.detail}`} right={row.amount} />
+          ))}
         </View>
       ))}
       <Rule />
       <Line left="TOTAL" right={receipt.total} bold />
-      <Line left={receipt.paymentLabel} right={receipt.tendered} />
-      {receipt.reference ? <Line left="Ref no." right={receipt.reference} /> : null}
-      <Line left="Change" right={receipt.change} />
+      {paymentRows(receipt).map((row) => (
+        <Line key={row.detail} left={row.detail} right={row.amount} />
+      ))}
       <Rule />
+      {receipt.notes.length > 0 ? (
+        <>
+          {receipt.notes.map((note) => (
+            <Line key={note} left={note} />
+          ))}
+          <Rule />
+        </>
+      ) : null}
       {receipt.footer.map((line) => (
         <Centered key={line}>{line}</Centered>
       ))}
@@ -86,6 +97,7 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: 'row', justifyContent: 'space-between', gap: spacing.sm },
   mono: { fontFamily: monoFont, fontSize: 12 },
+  shrink: { flexShrink: 1 },
   bold: { fontWeight: '700' },
   center: { textAlign: 'center' },
   rule: { borderTopWidth: 1, borderStyle: 'dashed', borderColor: INK, marginVertical: 4 },

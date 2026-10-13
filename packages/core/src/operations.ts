@@ -3,12 +3,27 @@
  * checks permissions, saves its records in one transaction, and queues them
  * in the outbox for the server.
  */
-import { cartDemand, priceCart, saleMovements, type CartLine } from './cart';
+import { priceCart, productUnits, saleMovements, saleUnits, stockChanges, type CartLine } from './cart';
 import { ALLOW_NEGATIVE_STOCK } from './config';
 import { localDay, parseDay } from './dates';
 import { shortId, uuid } from './ids';
-import { levelOf, sellable, stockByProduct, type StockLevel } from './ledger';
-import type { DeviceSettings, MetaRecord, OutboxEntry, Payment, Product, Sale, StockMovement, User } from './models';
+import { levelOf, NO_STOCK, stockByProduct, type StockLevel } from './ledger';
+import type {
+  Borrower,
+  DeviceSettings,
+  LoanEntry,
+  MetaRecord,
+  OutboxCollection,
+  OutboxEntry,
+  OutboxRecord,
+  Payment,
+  Product,
+  ProductSet,
+  Sale,
+  StockCondition,
+  StockMovement,
+  User,
+} from './models';
 import { assertCan } from './roles';
 import { COLLECTIONS, put, remove, type ObservableStore, type StoreOp } from './store';
 import type { MovementInput } from './validation';
@@ -23,6 +38,7 @@ export interface OpContext {
 
 export interface Shortage {
   productId: string;
+  condition: StockCondition;
   name: string;
   available: number;
   needed: number;
@@ -39,47 +55,134 @@ export class StockError extends Error {
   }
 }
 
-export function outboxEntry(collection: OutboxEntry['collection'], record: Sale | StockMovement, now: string): OutboxEntry {
+export function outboxEntry(collection: OutboxCollection, record: OutboxRecord, now: string): OutboxEntry {
   return { id: uuid(), collection, recordId: record.id, payload: record, createdAt: now, attempts: 0 };
 }
 
-/** Lines in the cart that need more sellable stock than the branch has. */
+/** Saves records and queues each one for the server. */
+export function saveAndQueue(collection: OutboxCollection, records: OutboxRecord[], now: string): StoreOp[] {
+  return records.flatMap((record) => [put(collection, record), put('outbox', outboxEntry(collection, record, now))]);
+}
+
+/** Stock the cart takes off the shelf, per product and condition (sets opened up into their items). */
+export function stockNeeds(cart: CartLine[], sets: Map<string, ProductSet> = new Map()): Map<string, StockLevel> {
+  const needs = new Map<string, StockLevel>();
+  for (const unit of productUnits(cart, sets)) {
+    for (const change of stockChanges(unit)) {
+      if (change.qty >= 0) continue;
+      const level = needs.get(unit.productId) ?? { ...NO_STOCK };
+      level[change.condition] -= change.qty;
+      needs.set(unit.productId, level);
+    }
+  }
+  return needs;
+}
+
+/** Products in the cart that need more stock than the branch has (full, empty or units). */
 export function findShortages(
-  cart: Pick<CartLine, 'productId' | 'qty'>[],
+  cart: CartLine[],
   products: Map<string, Product>,
   levels: Map<string, StockLevel>,
+  sets: Map<string, ProductSet> = new Map(),
 ): Shortage[] {
   const shortages: Shortage[] = [];
-  for (const [productId, needed] of cartDemand(cart)) {
+  for (const [productId, needs] of stockNeeds(cart, sets)) {
     const product = products.get(productId);
     if (!product) continue;
-    const available = sellable(product, levelOf(levels, productId));
-    if (available < needed) shortages.push({ productId, name: product.name, available, needed });
+    const level = levelOf(levels, productId);
+    for (const condition of ['full', 'unit', 'empty'] as const) {
+      const needed = needs[condition];
+      if (needed > 0 && level[condition] < needed) {
+        const name = condition === 'empty' ? `${product.name} empty cylinders` : product.name;
+        shortages.push({ productId, condition, name, available: level[condition], needed });
+      }
+    }
   }
   return shortages;
 }
 
+/** Who a Borrowing-window sale is for: someone already on the list (id), or a new borrower. */
+export interface BorrowerRef {
+  id?: string;
+  name: string;
+  phone?: string;
+}
+
+/** Finds the borrower, or makes a new one (refusing a second borrower with the same name). */
+async function resolveBorrower(ctx: OpContext, ref: BorrowerRef, now: string): Promise<{ borrower: Borrower; isNew: boolean }> {
+  const borrowers = await ctx.store.list<Borrower>('borrowers');
+  if (ref.id) {
+    const borrower = borrowers.find((b) => b.id === ref.id);
+    if (!borrower) throw new Error('That borrower is no longer on the list.');
+    return { borrower, isNew: false };
+  }
+  const name = ref.name.trim().replace(/\s+/g, ' ');
+  if (name.length < 2) throw new Error("Enter the borrower's name.");
+  if (borrowers.some((b) => b.name.toLowerCase() === name.toLowerCase())) {
+    throw new Error(`${name} is already on the list of borrowers. Choose them instead of adding them again.`);
+  }
+  const phone = ref.phone?.trim();
+  const borrower: Borrower = { id: uuid(), name, ...(phone ? { phone } : {}), createdAt: now, receivedAt: null };
+  return { borrower, isNew: true };
+}
+
+export function loanEntry(
+  ctx: OpContext,
+  user: User,
+  borrower: Pick<Borrower, 'id' | 'name'>,
+  fields: Pick<LoanEntry, 'kind' | 'amount'> & Partial<LoanEntry>,
+  now: string,
+): LoanEntry {
+  return {
+    id: uuid(),
+    borrowerId: borrower.id,
+    borrowerName: borrower.name,
+    locationId: ctx.locationId,
+    userId: user.id,
+    deviceId: ctx.deviceId,
+    occurredAt: now,
+    createdAt: now,
+    receivedAt: null,
+    ...fields,
+  };
+}
+
 const RECEIPT_SEQ_ID = 'receipt-seq';
 
-export async function recordSale(ctx: OpContext, input: { cart: CartLine[]; payment: Payment }): Promise<Sale> {
+/**
+ * Records a sale. Sales from the Borrowing window also name the borrower: a
+ * payment 'on account' adds the total to what they owe, and each borrowed
+ * cylinder is noted until it comes back.
+ */
+export async function recordSale(
+  ctx: OpContext,
+  input: { cart: CartLine[]; payment: Payment; borrower?: BorrowerRef },
+): Promise<Sale> {
   const user = ctx.user;
   assertCan(user, 'pos.sell');
   if (input.cart.length === 0) throw new Error('The cart is empty.');
+  const onAccount = input.payment.method === 'credit';
+  const lendsCylinder = input.cart.some((line) => line.type === 'borrow');
+  if ((onAccount || lendsCylinder) && !input.borrower) throw new Error('Choose who is borrowing.');
+  if (onAccount || lendsCylinder) assertCan(user, 'borrow.manage');
 
-  const [products, movements] = await Promise.all([
+  const [products, sets, movements] = await Promise.all([
     ctx.store.list<Product>('products'),
+    ctx.store.list<ProductSet>('sets'),
     ctx.store.list<StockMovement>('movements'),
   ]);
   const byId = new Map(products.map((p) => [p.id, p]));
-  const { lines, total } = priceCart(input.cart, byId);
+  const setsById = new Map(sets.map((s) => [s.id, s]));
+  const { lines, total } = priceCart(input.cart, byId, setsById);
   if (input.payment.amount !== total) throw new Error('The payment does not match the cart total.');
 
   if (!ALLOW_NEGATIVE_STOCK) {
-    const shortages = findShortages(input.cart, byId, stockByProduct(movements, ctx.locationId));
+    const shortages = findShortages(input.cart, byId, stockByProduct(movements, ctx.locationId), setsById);
     if (shortages.length > 0) throw new StockError(shortages);
   }
 
   const now = (ctx.now?.() ?? new Date()).toISOString();
+  const borrower = input.borrower ? await resolveBorrower(ctx, input.borrower, now) : null;
   const seq = ((await ctx.store.get<MetaRecord<number>>('meta', RECEIPT_SEQ_ID))?.value ?? 0) + 1;
   const sale: Sale = {
     id: uuid(),
@@ -91,17 +194,28 @@ export async function recordSale(ctx: OpContext, input: { cart: CartLine[]; paym
     total,
     payment: input.payment,
     status: 'completed',
+    ...(borrower ? { borrowerId: borrower.borrower.id, borrowerName: borrower.borrower.name } : {}),
     createdAt: now,
     receivedAt: null,
   };
-  const saleMoves = saleMovements(sale, user.id);
+
+  const loans: LoanEntry[] = [];
+  if (borrower) {
+    if (onAccount) loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'credit', amount: total, saleId: sale.id }, now));
+    for (const unit of saleUnits(sale)) {
+      if (unit.type !== 'borrow') continue;
+      loans.push(
+        loanEntry(ctx, user, borrower.borrower, { kind: 'cylinder_out', amount: 0, productId: unit.productId, qty: unit.qty, saleId: sale.id }, now),
+      );
+    }
+  }
 
   await ctx.store.batch([
-    put('sales', sale),
-    ...saleMoves.map((m) => put('movements', m)),
+    ...(borrower?.isNew ? saveAndQueue('borrowers', [borrower.borrower], now) : []),
+    ...saveAndQueue('sales', [sale], now),
+    ...saveAndQueue('movements', saleMovements(sale, user.id), now),
+    ...saveAndQueue('loans', loans, now),
     put('meta', { id: RECEIPT_SEQ_ID, value: seq }),
-    put('outbox', outboxEntry('sales', sale, now)),
-    ...saleMoves.map((m) => put('outbox', outboxEntry('movements', m, now))),
   ]);
   return sale;
 }
@@ -134,7 +248,7 @@ export async function recordMovement(ctx: OpContext, input: MovementInput): Prom
     const levels = stockByProduct(await ctx.store.list<StockMovement>('movements'), ctx.locationId);
     const available = levelOf(levels, product.id)[condition];
     if (available + qty < 0) {
-      throw new StockError([{ productId: product.id, name: `${product.name} (${condition})`, available, needed: -qty }]);
+      throw new StockError([{ productId: product.id, condition, name: `${product.name} (${condition})`, available, needed: -qty }]);
     }
   }
 
@@ -159,11 +273,15 @@ export async function recordMovement(ctx: OpContext, input: MovementInput): Prom
     createdAt: now,
     receivedAt: null,
   };
-  await ctx.store.batch([put('movements', movement), put('outbox', outboxEntry('movements', movement, now))]);
+  await ctx.store.batch(saveAndQueue('movements', [movement], now));
   return movement;
 }
 
-/** Voiding keeps the sale (marked voided) and adds movements that put the stock back. */
+/**
+ * Voiding keeps the sale (marked voided) and adds movements that put the stock
+ * back. A Borrowing-window sale also takes its refill off the borrower's account
+ * and its borrowed cylinders off their list.
+ */
 export async function voidSale(ctx: OpContext, saleId: string, reason: string): Promise<Sale> {
   const user = ctx.user;
   assertCan(user, 'sales.void');
@@ -186,13 +304,44 @@ export async function voidSale(ctx: OpContext, saleId: string, reason: string): 
       createdAt: now,
       receivedAt: null,
     }));
+
+  const loanReversals: LoanEntry[] = [];
+  if (sale.borrowerId) {
+    const theirs = (await ctx.store.list<LoanEntry>('loans')).filter((e) => e.borrowerId === sale.borrowerId);
+    const reversed = new Set(theirs.map((e) => e.reverses));
+    for (const entry of theirs) {
+      if (entry.saleId !== sale.id || reversed.has(entry.id) || (entry.kind !== 'credit' && entry.kind !== 'cylinder_out')) continue;
+      if (entry.kind === 'cylinder_out') {
+        const stillOut = theirs.filter((e) => e.productId === entry.productId).reduce((sum, e) => sum + (e.qty ?? 0), 0);
+        if (stillOut < (entry.qty ?? 0)) {
+          throw new Error(
+            "The cylinder borrowed in this sale has already been returned, so the sale can't be voided. Record a count adjustment in Inventory instead.",
+          );
+        }
+      }
+      loanReversals.push({
+        ...entry,
+        id: uuid(),
+        kind: 'void',
+        amount: -entry.amount,
+        ...(entry.qty !== undefined ? { qty: -entry.qty } : {}),
+        reverses: entry.id,
+        note: reason,
+        locationId: ctx.locationId,
+        userId: user.id,
+        deviceId: ctx.deviceId,
+        occurredAt: now,
+        createdAt: now,
+        receivedAt: null,
+      });
+    }
+  }
   const voided: Sale = { ...sale, status: 'voided', voidReason: reason, voidedBy: user.id, voidedAt: now, receivedAt: null };
 
   await ctx.store.batch([
-    put('sales', voided),
-    ...reversals.map((m) => put('movements', m)),
-    put('outbox', outboxEntry('sales', voided, now)),
-    ...reversals.map((m) => put('outbox', outboxEntry('movements', m, now))),
+    ...saveAndQueue('sales', [voided], now),
+    ...saveAndQueue('movements', reversals, now),
+    ...saveAndQueue('loans', loanReversals, now),
   ]);
   return voided;
 }

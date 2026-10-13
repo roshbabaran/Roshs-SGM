@@ -7,9 +7,14 @@
  *   POST /sync/push    { entries: OutboxEntry[] }   -> PushResult
  *   GET  /sync/pull?cursor=...                      -> PullResult
  *
- * The server must check the user's role and branch on every request.
+ * The server must check the user's role and branch on every request. For each
+ * pushed entry, the permission depends on its collection:
+ *   sales, movements: pos.sell (sales), inventory.record (hand-recorded movements),
+ *     sales.void (voided sales)
+ *   products, sets: products.manage
+ *   borrowers, loans: borrow.manage (credit, cylinders lent and returned, payments)
  */
-import type { ISODate, Location, OutboxEntry, Product, Sale, StockMovement, User } from './models';
+import type { Borrower, ISODate, LoanEntry, Location, OutboxEntry, Product, ProductSet, Sale, StockMovement, User } from './models';
 
 export interface LoginResult {
   token: string;
@@ -24,12 +29,15 @@ export interface PushResult {
 
 export type PulledChange =
   | { collection: 'products'; records: Product[] }
+  | { collection: 'sets'; records: ProductSet[] }
   | { collection: 'locations'; records: Location[] }
   | { collection: 'users'; records: User[] }
   | { collection: 'sales'; records: Sale[] }
-  | { collection: 'movements'; records: StockMovement[] };
+  | { collection: 'movements'; records: StockMovement[] }
+  | { collection: 'borrowers'; records: Borrower[] }
+  | { collection: 'loans'; records: LoanEntry[] };
 
-/** Everything that changed on the server since `cursor`: new prices, users, other devices' sales. */
+/** Everything that changed on the server since `cursor`: new prices and sets, users, other devices' sales and loans. */
 export interface PullResult {
   cursor: string;
   changes: PulledChange[];

@@ -41,6 +41,10 @@ export const createPocketServices = once(async () => {
       removeItem: (key) => SecureStore.deleteItemAsync(key),
     },
     // The system print dialog (Android print service, AirPrint). Bluetooth receipt printers need their own library.
-    printer: { print: (html) => Print.printAsync({ html }) },
+    // Android only opens its print screen, so a report can't be confirmed as printed.
+    printer: {
+      print: (html) => Print.printAsync({ html }),
+      printDocument: (html) => Print.printAsync({ html }).then(() => 'opened' as const),
+    },
   });
 });

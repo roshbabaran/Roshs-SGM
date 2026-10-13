@@ -13,9 +13,11 @@ export interface Page {
 export const PAGES: Page[] = [
   { href: '/', label: 'Dashboard', icon: 'grid-outline', permission: 'dashboard.view' },
   { href: '/pos', label: 'Point of sale', icon: 'cart-outline', permission: 'pos.sell' },
+  { href: '/borrowing', label: 'Borrowing', icon: 'swap-horizontal-outline', permission: 'borrow.manage' },
   { href: '/inventory', label: 'Inventory', icon: 'cube-outline', permission: 'inventory.view' },
   { href: '/sales', label: 'Sales', icon: 'receipt-outline', permission: 'sales.view' },
   { href: '/reports', label: 'Reports', icon: 'bar-chart-outline', permission: 'reports.view' },
+  { href: '/products', label: 'Products', icon: 'pricetags-outline', permission: 'products.manage' },
   { href: '/users', label: 'Users', icon: 'people-outline', permission: 'users.manage' },
   { href: '/settings', label: 'Settings', icon: 'settings-outline' },
 ];

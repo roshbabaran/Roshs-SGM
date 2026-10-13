@@ -1,6 +1,6 @@
 import { ApiError, type ApiClient } from './api';
 import { SYNC_INTERVAL_MS } from './config';
-import type { MetaRecord, OutboxEntry, Sale, StockMovement } from './models';
+import type { MetaRecord, OutboxEntry, OutboxRecord } from './models';
 import { put, remove, type ObservableStore, type StoreOp } from './store';
 
 export type SyncState = 'idle' | 'syncing' | 'offline' | 'error' | 'signed-out';
@@ -153,7 +153,7 @@ export class SyncEngine {
         if (!entry) continue;
         ops.push(remove('outbox', entry.id));
         if (stillWaiting.has(`${entry.collection}:${entry.recordId}`)) continue;
-        const current = await store.get<Sale | StockMovement>(entry.collection, entry.recordId);
+        const current = await store.get<OutboxRecord>(entry.collection, entry.recordId);
         if (current) ops.push(put(entry.collection, { ...current, receivedAt: accepted.receivedAt }));
       }
       for (const rejected of result.rejected) {

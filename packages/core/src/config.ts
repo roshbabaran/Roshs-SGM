@@ -19,6 +19,13 @@ export const RECEIPT_FOOTER = ['Thank you for your purchase!', 'THIS IS NOT AN O
 /** When false, the counter cannot sell more full cylinders than the branch has on record. */
 export const ALLOW_NEGATIVE_STOCK = false;
 
+/**
+ * When true, selling a new cylinder also takes one empty cylinder of that
+ * product off the shelf, besides the full one. Set it to false to count only
+ * the full cylinder.
+ */
+export const NEW_SALE_TAKES_EMPTY = true;
+
 /** How long a signed-in device may keep working without reaching the server. */
 export const OFFLINE_GRACE_HOURS = 72;
 

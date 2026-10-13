@@ -1,22 +1,31 @@
 import {
+  addSetToCart,
   addToCart,
   ALLOW_NEGATIVE_STOCK,
   cartDemand,
+  cartLineKey,
   changeQty,
   changeType,
+  describeSet,
+  findShortages,
   formatPeso,
   isLowStock,
   levelOf,
   priceCart,
+  productUnits,
   recordSale,
+  regularPrice,
   sellable,
   stockByProduct,
   type CartLine,
   type Payment,
   type Product,
   type ProductKind,
+  type ProductLineType,
+  type ProductSet,
   type Sale,
   type SaleLine,
+  type Shortage,
   type StockLevel,
   type StockMovement,
 } from '@sgm/core';
@@ -36,27 +45,29 @@ import { useKeyboardShortcuts } from '../useKeyboardShortcuts';
 import { PaymentDialog } from './PaymentDialog';
 import { ReceiptDialog } from './receipts';
 
-const KIND_OPTIONS: { label: string; value: 'all' | ProductKind }[] = [
+type Section = 'all' | ProductKind | 'set';
+
+const SECTIONS: { label: string; value: Section }[] = [
   { label: 'All', value: 'all' },
   { label: 'Cylinders', value: 'cylinder' },
   { label: 'Accessories', value: 'accessory' },
+  { label: 'Sets', value: 'set' },
 ];
-
-const sameLine = (a: CartLine, b: CartLine) => a.productId === b.productId && a.type === b.type;
 
 /** Product cards fill the row: as many columns as fit at this width or wider. */
 const MIN_CARD_WIDTH = 200;
 
-/** The counter screen: pick products, choose refill or new cylinder, take payment, print. */
+/** The counter screen: pick products or sets, choose refill or new cylinder, take payment, print. */
 export function PosScreen() {
   const work = useWork();
   const toast = useToast();
   const { isWide } = useBreakpoint();
   const { data: products } = useCollection<Product>('products');
+  const { data: sets } = useCollection<ProductSet>('sets');
   const { data: movements } = useCollection<StockMovement>('movements');
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
-  const [kind, setKind] = useState<'all' | ProductKind>('all');
+  const [section, setSection] = useState<Section>('all');
   const [paying, setPaying] = useState(false);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [gridWidth, setGridWidth] = useState(0);
@@ -66,37 +77,59 @@ export function PosScreen() {
   const cardWidth = gridWidth > 0 ? Math.floor((gridWidth - spacing.md * (columns - 1)) / columns) : MIN_CARD_WIDTH;
 
   const byId = new Map(products.map((p) => [p.id, p]));
+  // A set can be sold only while every product in it still exists.
+  const setsById = new Map(sets.filter((set) => set.items.every((item) => byId.has(item.productId))).map((set) => [set.id, set]));
   const levels = stockByProduct(movements, work.locationId);
-  const lines = cart.filter((line) => byId.has(line.productId));
-  const { lines: priced, total } = priceCart(lines, byId);
-  const demand = cartDemand(lines);
+  const lines = cart.filter((line) => (line.type === 'set' ? setsById.has(line.setId) : byId.has(line.productId)));
+  const { lines: priced, total } = priceCart(lines, byId, setsById);
+  const demand = cartDemand(productUnits(lines, setsById));
   const q = query.trim().toLowerCase();
-  const shown = products.filter(
-    (p) => p.active && (kind === 'all' || p.kind === kind) && (!q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)),
-  );
+  const shownProducts =
+    section === 'set'
+      ? []
+      : products.filter(
+          (p) => p.active && (section === 'all' || p.kind === section) && (!q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)),
+        );
+  const shownSets = section === 'set' ? Array.from(setsById.values()).filter((set) => set.active && (!q || set.name.toLowerCase().includes(q))) : [];
+  const where = work.location?.name ?? 'this branch';
 
-  const roomFor = (product: Product, extra: number) =>
-    ALLOW_NEGATIVE_STOCK || (demand.get(product.id) ?? 0) + extra <= sellable(product, levelOf(levels, product.id));
+  const shortagesOf = (next: CartLine[]): Shortage[] => (ALLOW_NEGATIVE_STOCK ? [] : findShortages(next, byId, levels, setsById));
 
-  const add = (product: Product) => {
-    if (!roomFor(product, 1)) {
-      toast.show(`No more ${product.name} in stock at ${work.location?.name ?? 'this branch'}.`, 'error');
-      return;
-    }
-    setCart((current) => addToCart(current, product));
+  /** The change this would make to the cart pushes some stock below zero, or null if it fits. */
+  const newShortage = (next: CartLine[]): Shortage | null => {
+    const before = shortagesOf(lines);
+    return (
+      shortagesOf(next).find((s) => {
+        const was = before.find((b) => b.productId === s.productId && b.condition === s.condition);
+        return !was || s.needed > was.needed;
+      }) ?? null
+    );
   };
+
+  const stockMessage = (shortage: Shortage) => {
+    if (shortage.condition !== 'empty') return `No more ${shortage.name} in stock at ${where}.`;
+    const product = byId.get(shortage.productId)?.name ?? '';
+    return `A new ${product} also takes an empty cylinder from the shelf, and ${where} has ${shortage.available} left.`;
+  };
+
+  const update = (next: CartLine[]) => {
+    const shortage = newShortage(next);
+    if (shortage) toast.show(stockMessage(shortage), 'error');
+    else setCart(next);
+  };
+
+  const add = (product: Product) => update(addToCart(lines, product));
+  const addSet = (set: ProductSet) => update(addSetToCart(lines, set));
+
+  const indexOf = (line: CartLine) => lines.findIndex((l) => cartLineKey(l) === cartLineKey(line));
 
   const setQty = (line: CartLine, qty: number) => {
-    const product = byId.get(line.productId);
-    if (product && qty > line.qty && !roomFor(product, qty - line.qty)) {
-      toast.show(`No more ${product.name} in stock.`, 'error');
-      return;
-    }
-    setCart((current) => changeQty(current, current.findIndex((l) => sameLine(l, line)), qty));
+    const next = changeQty(lines, indexOf(line), qty);
+    if (qty > line.qty) update(next);
+    else setCart(next);
   };
 
-  const setType = (line: CartLine, type: CartLine['type']) =>
-    setCart((current) => changeType(current, current.findIndex((l) => sameLine(l, line)), type));
+  const setType = (line: CartLine, type: ProductLineType) => update(changeType(lines, indexOf(line), type));
 
   const charge = () => {
     if (lines.length > 0) setPaying(true);
@@ -128,22 +161,23 @@ export function PosScreen() {
       <View style={styles.toolbar}>
         <TextField
           ref={searchRef}
-          placeholder={Platform.OS === 'web' ? 'Search products (F2)' : 'Search products'}
+          placeholder={Platform.OS === 'web' ? `Search ${section === 'set' ? 'sets' : 'products'} (F2)` : `Search ${section === 'set' ? 'sets' : 'products'}`}
           value={query}
           onChangeText={setQuery}
           onSubmitEditing={() => {
-            if (shown.length === 1) add(shown[0]);
+            if (shownProducts.length === 1 && shownSets.length === 0) add(shownProducts[0]);
+            if (shownSets.length === 1 && shownProducts.length === 0) addSet(shownSets[0]);
           }}
           containerStyle={styles.search}
           accessibilityLabel="Search products"
         />
-        <SegmentedControl options={KIND_OPTIONS} value={kind} onChange={setKind} accessibilityLabel="Product type" />
+        <SegmentedControl options={SECTIONS} value={section} onChange={setSection} accessibilityLabel="Show" />
       </View>
       <ScrollView
         onLayout={(event) => setGridWidth(event.nativeEvent.layout.width)}
         contentContainerStyle={[styles.grid, !isWide && styles.list]}
       >
-        {shown.map((product) => (
+        {shownProducts.map((product) => (
           <ProductCard
             key={product.id}
             product={product}
@@ -154,7 +188,28 @@ export function PosScreen() {
             width={cardWidth}
           />
         ))}
-        {shown.length === 0 ? <EmptyState icon="search-outline" title="No products match" message="Try another name or type." /> : null}
+        {shownSets.map((set) => (
+          <SetCard
+            key={set.id}
+            set={set}
+            products={byId}
+            available={shortagesOf(addSetToCart([], set)).length === 0}
+            inCart={lines.find((line) => line.type === 'set' && line.setId === set.id)?.qty ?? 0}
+            onPress={() => addSet(set)}
+            row={!isWide}
+            width={cardWidth}
+          />
+        ))}
+        {section === 'set' && shownSets.length === 0 ? (
+          <EmptyState
+            icon="gift-outline"
+            title={q ? 'No sets match' : 'No sets yet'}
+            message={q ? 'Try another name.' : 'The owner adds sets on the Products page.'}
+          />
+        ) : null}
+        {section !== 'set' && shownProducts.length === 0 ? (
+          <EmptyState icon="search-outline" title="No products match" message="Try another name or type." />
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -265,6 +320,68 @@ function ProductCard({
   );
 }
 
+function SetCard({
+  set,
+  products,
+  available,
+  inCart,
+  onPress,
+  row,
+  width,
+}: {
+  set: ProductSet;
+  products: Map<string, Product>;
+  available: boolean;
+  inCart: number;
+  onPress: () => void;
+  row: boolean;
+  width: number;
+}) {
+  const { colors } = useTheme();
+  const regular = regularPrice(set, products);
+  const saving = regular - set.price;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Add ${set.name}, ${formatPeso(set.price)}.${available ? '' : ' Out of stock.'}`}
+      disabled={!available}
+      onPress={onPress}
+      style={({ pressed }) => [
+        row ? styles.productRow : [styles.productCard, { width }],
+        {
+          backgroundColor: pressed ? colors.primarySoft : colors.surface,
+          borderColor: inCart > 0 ? colors.primary : colors.border,
+          opacity: available ? 1 : 0.5,
+        },
+      ]}
+    >
+      <View style={[styles.productIcon, { backgroundColor: colors.primarySoft }]}>
+        <Icon name="gift-outline" color={colors.primary} />
+      </View>
+      <View style={styles.productInfo}>
+        <Text weight="700" numberOfLines={1}>
+          {set.name}
+        </Text>
+        <Text variant="small" muted numberOfLines={2}>
+          {describeSet(set, products)}
+        </Text>
+        <Text variant="small" numeric weight="600">
+          {formatPeso(set.price)}
+          {saving > 0 ? (
+            <Text variant="small" muted numeric style={styles.strike}>
+              {`  ${formatPeso(regular)}`}
+            </Text>
+          ) : null}
+        </Text>
+        <View style={styles.productBadges}>
+          {!available ? <Badge label="Out of stock" tone="danger" /> : saving > 0 ? <Badge label={`Save ${formatPeso(saving)}`} tone="success" /> : null}
+          {inCart > 0 ? <Badge label={`${inCart} in cart`} tone="info" /> : null}
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
 function CartPanel({
   lines,
   priced,
@@ -281,7 +398,7 @@ function CartPanel({
   products: Map<string, Product>;
   total: number;
   onQty: (line: CartLine, qty: number) => void;
-  onType: (line: CartLine, type: CartLine['type']) => void;
+  onType: (line: CartLine, type: ProductLineType) => void;
   onClear: () => void;
   onCharge: () => void;
   compact: boolean;
@@ -295,24 +412,34 @@ function CartPanel({
     >
       <ScrollView style={compact ? styles.cartLinesCompact : styles.cartLines} contentContainerStyle={styles.cartLinesContent}>
         {lines.length === 0 ? (
-          <EmptyState icon="cart-outline" title="No items yet" message="Tap a product to add it." />
+          <EmptyState icon="cart-outline" title="No items yet" message="Tap a product or a set to add it." />
         ) : (
           lines.map((line, i) => {
-            const product = products.get(line.productId);
             const sale = priced[i];
-            if (!product || !sale) return null;
+            if (!sale) return null;
+            const product = line.type === 'set' ? undefined : products.get(line.productId);
             return (
-              <View key={`${line.productId}-${line.type}`} style={[styles.cartLine, { borderBottomColor: colors.border }]}>
+              <View key={cartLineKey(line)} style={[styles.cartLine, { borderBottomColor: colors.border }]}>
                 <View style={styles.cartLineTop}>
                   <Text weight="600" style={styles.flex} numberOfLines={1}>
-                    {product.name}
+                    {sale.name}
                   </Text>
                   <Text weight="600" numeric>
                     {formatPeso(sale.amount)}
                   </Text>
                 </View>
+                {sale.type === 'set' ? (
+                  <Text variant="small" muted>
+                    {sale.items.map((item) => `${item.qty} × ${item.name}${item.type === 'item' ? '' : ` (${item.type})`}`).join(', ')}
+                  </Text>
+                ) : null}
+                {sale.type === 'new' && sale.contentPrice !== undefined ? (
+                  <Text variant="small" muted numeric>
+                    Cylinder {formatPeso(sale.unitPrice - sale.contentPrice)} + content {formatPeso(sale.contentPrice)} each
+                  </Text>
+                ) : null}
                 <View style={styles.cartLineControls}>
-                  {product.kind === 'cylinder' ? (
+                  {product?.kind === 'cylinder' ? (
                     <SegmentedControl
                       size="sm"
                       accessibilityLabel={`${product.name} sale type`}
@@ -323,13 +450,15 @@ function CartPanel({
                       value={line.type === 'new' ? 'new' : 'refill'}
                       onChange={(type) => onType(line, type)}
                     />
+                  ) : sale.type === 'set' ? (
+                    <Badge label={`Set · ${formatPeso(sale.unitPrice)} each`} tone="info" icon="gift-outline" />
                   ) : (
                     <Text variant="small" muted>
                       {formatPeso(sale.unitPrice)} each
                     </Text>
                   )}
                   <View style={styles.flex} />
-                  <Stepper value={line.qty} onChange={(qty) => onQty(line, qty)} label={product.name} />
+                  <Stepper value={line.qty} onChange={(qty) => onQty(line, qty)} label={sale.name} />
                 </View>
               </View>
             );
@@ -410,5 +539,6 @@ const styles = StyleSheet.create({
   stepper: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   stepButton: { width: 32, height: 32, borderRadius: radius.md, borderWidth: 1, alignItems: 'center', justifyContent: 'center', cursor: 'pointer' },
   stepValue: { minWidth: 24, textAlign: 'center' },
+  strike: { textDecorationLine: 'line-through', fontWeight: '400' },
   flex: { flex: 1 },
 });

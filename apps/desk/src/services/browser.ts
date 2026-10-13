@@ -72,6 +72,7 @@ export function browserPlatform(api: ApiClient): PlatformServices {
       setItem: async (key, value) => localStorage.setItem(key, value),
       removeItem: async (key) => localStorage.removeItem(key),
     },
-    printer: { print: (html) => printInFrame(html) },
+    // The browser can't tell whether the person printed or cancelled.
+    printer: { print: (html) => printInFrame(html), printDocument: (html) => printInFrame(html).then(() => 'opened' as const) },
   };
 }

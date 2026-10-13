@@ -8,11 +8,13 @@ import type { User } from './models';
 export const PERMISSIONS = [
   'dashboard.view',
   'pos.sell',
+  'borrow.manage',
   'sales.view',
   'sales.void',
   'inventory.view',
   'inventory.record',
   'reports.view',
+  'products.manage',
   'users.manage',
   'settings.device',
 ] as const;
@@ -30,18 +32,20 @@ export const ROLE_LABELS: Record<Role, string> = {
 export const PERMISSION_LABELS: Record<Permission, string> = {
   'dashboard.view': 'See the dashboard',
   'pos.sell': 'Sell at the counter',
+  'borrow.manage': 'Lend cylinders, give credit and take payments',
   'sales.view': 'See sales history',
   'sales.void': 'Void sales',
   'inventory.view': 'See stock',
   'inventory.record': 'Record stock movements',
   'reports.view': 'See reports',
+  'products.manage': 'Change products, prices and sets',
   'users.manage': 'Manage users',
   'settings.device': 'Change device settings',
 };
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   owner: PERMISSIONS,
-  employee: ['dashboard.view', 'pos.sell', 'sales.view', 'inventory.view'],
+  employee: ['dashboard.view', 'pos.sell', 'borrow.manage', 'sales.view', 'inventory.view'],
   warehouse: ['inventory.view', 'inventory.record'],
 };
 

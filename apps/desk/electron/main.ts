@@ -13,7 +13,7 @@ import { APP_URL, contentSecurityPolicy, isAppUrl, registerAppScheme, serveApp }
 import { IPC } from './bridge';
 import { loadDeviceId } from './device';
 import { openLocalDb } from './local-db';
-import { listPrinters, printReceipt } from './printing';
+import { listPrinters, printDocument, printReceipt } from './printing';
 import { createSecureStore } from './secure-store';
 import { checkForUpdates, checkForUpdatesInBackground } from './updates';
 
@@ -84,6 +84,10 @@ function start(): void {
     if (paperWidthMm !== 58 && paperWidthMm !== 80) throw new Error('Invalid request.');
     if (printerName !== undefined && typeof printerName !== 'string') throw new Error('Invalid request.');
     return printReceipt(html, { paperWidthMm, printerName: printerName || undefined });
+  });
+  handle(IPC.printerPrintDocument, ([html]) => {
+    if (typeof html !== 'string' || html.length > 2_000_000) throw new Error('Invalid request.');
+    return printDocument(html);
   });
 
   handle(IPC.updatesCheck, () => checkForUpdates());

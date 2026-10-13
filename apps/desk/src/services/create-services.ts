@@ -51,6 +51,7 @@ async function electronPlatform(bridge: SgmBridge): Promise<PlatformServices> {
     printer: {
       listPrinters: () => bridge.printer.list(),
       print: (html, options) => bridge.printer.print(html, options),
+      printDocument: (html) => bridge.printer.printDocument(html),
     },
     checkForUpdates: () => bridge.updates.check(),
   };

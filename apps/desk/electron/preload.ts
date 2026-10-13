@@ -2,26 +2,38 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 import { IPC, type SgmBridge } from './bridge';
 
+/**
+ * Calls the main process. Electron puts "Error invoking remote method '…': Error: "
+ * in front of every error message, so this keeps only the part a person can read.
+ */
+function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
+  return ipcRenderer.invoke(channel, ...args).catch((e: unknown) => {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, ''));
+  });
+}
+
 const bridge: SgmBridge = {
   app: {
-    info: () => ipcRenderer.invoke(IPC.appInfo),
+    info: () => invoke(IPC.appInfo),
   },
   store: {
-    get: (collection, id) => ipcRenderer.invoke(IPC.storeGet, collection, id),
-    list: (collection) => ipcRenderer.invoke(IPC.storeList, collection),
-    batch: (ops) => ipcRenderer.invoke(IPC.storeBatch, ops),
+    get: (collection, id) => invoke(IPC.storeGet, collection, id),
+    list: (collection) => invoke(IPC.storeList, collection),
+    batch: (ops) => invoke(IPC.storeBatch, ops),
   },
   secure: {
-    getItem: (key) => ipcRenderer.invoke(IPC.secureGet, key),
-    setItem: (key, value) => ipcRenderer.invoke(IPC.secureSet, key, value),
-    removeItem: (key) => ipcRenderer.invoke(IPC.secureRemove, key),
+    getItem: (key) => invoke(IPC.secureGet, key),
+    setItem: (key, value) => invoke(IPC.secureSet, key, value),
+    removeItem: (key) => invoke(IPC.secureRemove, key),
   },
   printer: {
-    list: () => ipcRenderer.invoke(IPC.printerList),
-    print: (html, options) => ipcRenderer.invoke(IPC.printerPrint, html, options),
+    list: () => invoke(IPC.printerList),
+    print: (html, options) => invoke(IPC.printerPrint, html, options),
+    printDocument: (html) => invoke(IPC.printerPrintDocument, html),
   },
   updates: {
-    check: () => ipcRenderer.invoke(IPC.updatesCheck),
+    check: () => invoke(IPC.updatesCheck),
   },
 };
 

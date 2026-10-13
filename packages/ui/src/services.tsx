@@ -37,11 +37,20 @@ export interface PrinterInfo {
   description?: string;
 }
 
+/**
+ * How printing a report ended: "sent" once the pages have gone to the printer,
+ * "cancelled" when the person closed the print dialog, or "opened" when the
+ * device only opens its print screen and can't tell what happened next.
+ */
+export type PrintOutcome = 'sent' | 'cancelled' | 'opened';
+
 export interface ReceiptPrinter {
   /** Printers installed on this PC (SGM Desk only). */
   listPrinters?: () => Promise<PrinterInfo[]>;
-  /** Prints silently when printerName is given, otherwise shows the system print dialog. */
+  /** Prints a receipt: silently when printerName is given, otherwise through the system print dialog. */
   print(html: string, options: { paperWidthMm: PaperWidth; printerName?: string }): Promise<void>;
+  /** Prints a full page (A4), such as a report, through the system print dialog. Rejects when it fails. */
+  printDocument(html: string): Promise<PrintOutcome>;
 }
 
 export interface PlatformServices {

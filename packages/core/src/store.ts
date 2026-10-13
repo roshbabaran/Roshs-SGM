@@ -1,13 +1,26 @@
 /** The local database each device keeps for offline mode. */
 
-export type Collection = 'products' | 'locations' | 'users' | 'movements' | 'sales' | 'outbox' | 'meta';
+export type Collection =
+  | 'products'
+  | 'sets'
+  | 'locations'
+  | 'users'
+  | 'movements'
+  | 'sales'
+  | 'borrowers'
+  | 'loans'
+  | 'outbox'
+  | 'meta';
 
 export const COLLECTIONS: readonly Collection[] = [
   'products',
+  'sets',
   'locations',
   'users',
   'movements',
   'sales',
+  'borrowers',
+  'loans',
   'outbox',
   'meta',
 ];

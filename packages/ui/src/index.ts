@@ -18,12 +18,14 @@ export * from './useBreakpoint';
 export * from './useKeyboardShortcuts';
 export * from './useZodForm';
 
+export * from './features/BorrowingScreen';
 export * from './features/DashboardScreen';
 export * from './features/InventoryScreen';
 export * from './features/LoginScreen';
 export * from './features/MovementDialog';
 export * from './features/PaymentDialog';
 export * from './features/PosScreen';
+export * from './features/ProductsScreen';
 export * from './features/receipts';
 export * from './features/ReportsScreen';
 export * from './features/RequirePermission';

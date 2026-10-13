@@ -30,6 +30,8 @@ export interface SgmBridge {
   printer: {
     list(): Promise<PrinterInfo[]>;
     print(html: string, options: { paperWidthMm: PaperWidth; printerName?: string }): Promise<void>;
+    /** A4 pages such as reports, through the Windows print dialog. Resolves "sent" or "cancelled"; rejects when it fails. */
+    printDocument(html: string): Promise<'sent' | 'cancelled'>;
   };
   updates: {
     check(): Promise<string>;
@@ -47,5 +49,6 @@ export const IPC = {
   secureRemove: 'sgm:secure-remove',
   printerList: 'sgm:printer-list',
   printerPrint: 'sgm:printer-print',
+  printerPrintDocument: 'sgm:printer-print-document',
   updatesCheck: 'sgm:updates-check',
 } as const;
