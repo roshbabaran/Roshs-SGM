@@ -1,15 +1,17 @@
-import { PosScreen, useWork } from '@sgm/ui';
+import { DashboardScreen, useWork } from '@sgm/ui';
 import { Redirect } from 'expo-router';
 
 import { Screen } from '@/components/Screen';
 
-/** The counter, or the stock page for people who don't sell (warehouse staff). */
-export default function SellPage() {
+/** The dashboard, or the first tab this person may use (warehouse staff start on Stock). */
+export default function HomePage() {
   const work = useWork();
-  if (!work.can('pos.sell')) return <Redirect href="/inventory" />;
+  if (!work.can('dashboard.view')) {
+    return <Redirect href={work.can('pos.sell') ? '/sell' : work.can('inventory.view') ? '/inventory' : '/more'} />;
+  }
   return (
     <Screen>
-      <PosScreen />
+      <DashboardScreen />
     </Screen>
   );
 }
