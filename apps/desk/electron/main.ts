@@ -1,6 +1,7 @@
 /**
  * SGM Desk's main process. It opens the window and owns everything that touches
- * the PC: the offline database, the encrypted sign-in token and the printer.
+ * the PC: the offline database, the encrypted sign-in token, the printer and
+ * the receipt reader.
  * The screens can only reach these through the functions in preload.ts, and
  * every request is checked here first.
  */
@@ -13,6 +14,7 @@ import { APP_URL, contentSecurityPolicy, isAppUrl, registerAppScheme, serveApp }
 import { IPC } from './bridge';
 import { loadDeviceId } from './device';
 import { openLocalDb } from './local-db';
+import { checkPixels, createOcrReader } from './ocr';
 import { listPrinters, printDocument, printReceipt } from './printing';
 import { createSecureStore } from './secure-store';
 import { checkForUpdates, checkForUpdatesInBackground } from './updates';
@@ -48,7 +50,11 @@ function start(): void {
   const db = openLocalDb(path.join(dataDir, 'sgm.db'));
   const secure = createSecureStore(path.join(dataDir, 'secure.json'));
   const deviceId = loadDeviceId(path.join(dataDir, 'device.json'));
-  app.on('will-quit', () => db.close());
+  const ocr = createOcrReader();
+  app.on('will-quit', () => {
+    db.close();
+    ocr.close();
+  });
 
   serveApp(path.join(__dirname, 'renderer'), contentSecurityPolicy(apiUrl));
   session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) =>
@@ -91,6 +97,8 @@ function start(): void {
   });
 
   handle(IPC.updatesCheck, () => checkForUpdates());
+
+  handle(IPC.ocrRead, ([image]) => ocr.read(checkPixels(image)));
 
   if (!devServerUrl) Menu.setApplicationMenu(null);
   createWindow();

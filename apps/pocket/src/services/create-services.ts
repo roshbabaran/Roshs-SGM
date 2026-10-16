@@ -1,6 +1,7 @@
 /**
  * Connects the shared screens to the phone: SQLite for offline data, the
- * phone's secure storage for the sign-in token, and the system print dialog.
+ * phone's secure storage for the sign-in token, the system print dialog, and
+ * the camera and on-phone reader for scanning handwritten receipts.
  */
 import { DemoApi, HttpApi, ObservableStore, setUuidGenerator } from '@sgm/core';
 import { createAppServices, once } from '@sgm/ui';
@@ -9,6 +10,7 @@ import * as Crypto from 'expo-crypto';
 import * as Print from 'expo-print';
 import * as SecureStore from 'expo-secure-store';
 
+import { createPocketScanner } from './ocr';
 import { openSqliteStore } from './sqlite-store';
 
 // Phones have no global `crypto`, so record IDs come from expo-crypto.
@@ -46,5 +48,6 @@ export const createPocketServices = once(async () => {
       print: (html) => Print.printAsync({ html }),
       printDocument: (html) => Print.printAsync({ html }).then(() => 'opened' as const),
     },
+    ocr: createPocketScanner(),
   });
 });

@@ -31,6 +31,7 @@ npm run typecheck   # TypeScript checks for every package
 | `npm run desk:build` | Builds the screens and the Electron code into `apps/desk/build/app`. |
 | `npm run desk:dist` | Builds the Windows installer into `apps/desk/release/`. |
 | `npm run pocket` / `npm run pocket:android` | Starts SGM Pocket (Expo Go, or an Android emulator). |
+| `npm run ocr:models` | Downloads the receipt reading models into `models/ocr/`. Receipt scanning needs them in both apps. |
 
 ### Demo mode
 
@@ -56,6 +57,7 @@ EXPO_PUBLIC_API_URL=https://your-server.example.com
 - **Stock is a ledger.** Stock on hand is never typed over; it is the sum of movements (delivery, sale, transfer, adjustment, damage). Two offline devices can sell at the same time and sync later without overwriting each other. Full and empty cylinders are counted separately: a refill sale takes an empty back, a new-cylinder sale also takes an empty off the shelf (see `NEW_SALE_TAKES_EMPTY` below), and a borrowed cylinder goes out full and comes back as an empty.
 - **Borrowing is a ledger too.** Refills on credit, lent cylinders, returns and payments are entries in `loans`. What someone owes and how many cylinders they have out are sums of their entries; payments and returns settle the oldest first, so every open item keeps the date it was borrowed.
 - **Money is in centavos** (whole numbers), so totals never pick up rounding errors.
+- **Handwritten receipts can be scanned into a sale.** On the Sell screen, **Scan receipt** reads a photo offline with PaddleOCR's models, and the cashier checks every line against the photo before it goes into the cart. The receipt number is saved with the sale so the same receipt can't be entered twice. SGM Pocket needs its development build for this (`npx expo run:android`), not Expo Go. See `packages/core/src/ocr/README.md`.
 - **Signing in needs the server.** After that, a device works offline for up to 72 hours before it must reach the server again.
 - **Roles live in `packages/core/src/roles.ts`.** The apps hide menus and buttons a person can't use, but the server must check the same permissions on every request.
 
@@ -84,6 +86,7 @@ The API server must allow requests from the origin `app://sgm` (CORS), and from 
 | What the server must provide | `packages/core/src/api.ts` |
 | Sample products and demo accounts | `packages/core/src/demo.ts` |
 | The Windows installer | `apps/desk/electron-builder.yml` |
+| How receipts are read (photo checks, thresholds, matching) | `packages/core/src/ocr/` (see its `README.md`) |
 
 ## Next steps
 
@@ -91,6 +94,7 @@ The API server must allow requests from the origin `app://sgm` (CORS), and from 
 2. Replace the placeholder address and TIN in `packages/core/src/config.ts`. Receipts say "THIS IS NOT AN OFFICIAL RECEIPT" until the system is registered with the BIR.
 3. Turn on automatic updates by setting `publish` in `apps/desk/electron-builder.yml`, and sign the installer so Windows SmartScreen doesn't warn.
 4. If SGM Pocket needs to print to Bluetooth receipt printers, add an ESC/POS printing library (`receiptText()` in `packages/core/src/receipt.ts` is the starting point).
+5. Try receipt scanning on real receipts from the store and on the phones the staff will use, then tune it (`packages/core/src/ocr/README.md`). The sample receipts so far are written in a handwriting font.
 
 ## Troubleshooting
 

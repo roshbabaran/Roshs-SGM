@@ -26,6 +26,7 @@ export * from './features/MovementDialog';
 export * from './features/PaymentDialog';
 export * from './features/PosScreen';
 export * from './features/ProductsScreen';
+export * from './features/ReceiptScanDialog';
 export * from './features/receipts';
 export * from './features/ReportsScreen';
 export * from './features/RequirePermission';

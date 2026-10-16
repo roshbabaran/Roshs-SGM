@@ -150,17 +150,33 @@ export function loanEntry(
 const RECEIPT_SEQ_ID = 'receipt-seq';
 
 /**
+ * Checks the number of a handwritten receipt before a sale keeps it: the same
+ * number can't be entered twice at one branch (a voided sale doesn't count).
+ * The Sell screen checks it when a scan is confirmed, while the number can
+ * still be corrected, and recordSale checks it again.
+ */
+export async function checkSlipNo(ctx: OpContext, slipNo: string): Promise<void> {
+  if (slipNo.length > 40) throw new Error('The receipt number is too long.');
+  const sales = await ctx.store.list<Sale>('sales');
+  const entered = sales.find((s) => s.slipNo === slipNo && s.locationId === ctx.locationId && s.status === 'completed');
+  if (entered) throw new Error(`Receipt no. ${slipNo} was already entered as sale ${entered.receiptNo}. Check the number on the receipt.`);
+}
+
+/**
  * Records a sale. Sales from the Borrowing window also name the borrower: a
  * payment 'on account' adds the total to what they owe, and each borrowed
- * cylinder is noted until it comes back.
+ * cylinder is noted until it comes back. A sale scanned from a handwritten
+ * receipt keeps the receipt's number (`slipNo`), and the same number can't be
+ * entered twice at one branch.
  */
 export async function recordSale(
   ctx: OpContext,
-  input: { cart: CartLine[]; payment: Payment; borrower?: BorrowerRef },
+  input: { cart: CartLine[]; payment: Payment; borrower?: BorrowerRef; slipNo?: string },
 ): Promise<Sale> {
   const user = ctx.user;
   assertCan(user, 'pos.sell');
   if (input.cart.length === 0) throw new Error('The cart is empty.');
+  const slipNo = input.slipNo?.trim() || undefined;
   const onAccount = input.payment.method === 'credit';
   const lendsCylinder = input.cart.some((line) => line.type === 'borrow');
   if ((onAccount || lendsCylinder) && !input.borrower) throw new Error('Choose who is borrowing.');
@@ -181,6 +197,8 @@ export async function recordSale(
     if (shortages.length > 0) throw new StockError(shortages);
   }
 
+  if (slipNo) await checkSlipNo(ctx, slipNo);
+
   const now = (ctx.now?.() ?? new Date()).toISOString();
   const borrower = input.borrower ? await resolveBorrower(ctx, input.borrower, now) : null;
   const seq = ((await ctx.store.get<MetaRecord<number>>('meta', RECEIPT_SEQ_ID))?.value ?? 0) + 1;
@@ -195,6 +213,7 @@ export async function recordSale(
     payment: input.payment,
     status: 'completed',
     ...(borrower ? { borrowerId: borrower.borrower.id, borrowerName: borrower.borrower.name } : {}),
+    ...(slipNo ? { slipNo } : {}),
     createdAt: now,
     receivedAt: null,
   };

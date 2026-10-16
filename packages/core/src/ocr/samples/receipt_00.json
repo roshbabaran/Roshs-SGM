@@ -1,0 +1,41 @@
+{
+  "about": "Synthetic receipt written in a handwriting font (PatrickHand-Regular), for the end-to-end test. Products are those in ../test-helpers.ts.",
+  "receiptNo": "7128",
+  "date": "2026-10-05",
+  "writtenDate": "10/5/2026",
+  "total": 306500,
+  "lines": [
+    {
+      "written": "Solane 11kg",
+      "qty": 2,
+      "productId": "solane-11",
+      "type": "refill",
+      "unitPrice": 98000,
+      "amount": 196000
+    },
+    {
+      "written": "Hose",
+      "qty": 1,
+      "productId": "hose",
+      "type": "item",
+      "unitPrice": 18000,
+      "amount": 18000
+    },
+    {
+      "written": "Fiesta Gas 11kg ref.",
+      "qty": 1,
+      "productId": "fiesta-11",
+      "type": "refill",
+      "unitPrice": 90000,
+      "amount": 90000
+    },
+    {
+      "written": "Hose clamp",
+      "qty": 1,
+      "productId": "clamp",
+      "type": "item",
+      "unitPrice": 2500,
+      "amount": 2500
+    }
+  ]
+}

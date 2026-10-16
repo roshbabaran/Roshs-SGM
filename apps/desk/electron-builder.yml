@@ -28,3 +28,12 @@ nsis:
 #   owner: NathBajamunde
 #   repo: SGM-Desktop-Mobile
 publish: null
+
+# Receipt scanning: scripts/stage-ocr.cjs gathers the models and ONNX Runtime
+# into build/ocr before packing, and these copy them into resources/.
+beforePack: scripts/stage-ocr.cjs
+extraResources:
+  - from: build/ocr/models
+    to: models
+  - from: build/ocr/node_modules
+    to: node_modules

@@ -7,7 +7,10 @@
     "icon": "./assets/icon.png",
     "scheme": "sgmpocket",
     "userInterfaceStyle": "automatic",
-    "platforms": ["android", "ios"],
+    "platforms": [
+      "android",
+      "ios"
+    ],
     "ios": {
       "bundleIdentifier": "ph.sibugaygas.sgmpocket",
       "supportsTablet": true
@@ -27,6 +30,15 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 160,
           "backgroundColor": "#0F1B33"
+        }
+      ],
+      "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "SGM Pocket uses the camera to scan handwritten receipts into a sale.",
+          "photosPermission": "SGM Pocket opens the receipt photos you choose so it can scan them into a sale.",
+          "microphonePermission": false
         }
       ]
     ],

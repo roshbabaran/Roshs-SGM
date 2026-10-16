@@ -6,6 +6,7 @@ import {
   cartLineKey,
   changeQty,
   changeType,
+  checkSlipNo,
   describeSet,
   findShortages,
   formatPeso,
@@ -35,7 +36,7 @@ import { Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 're
 import { Badge, Card, EmptyState, ScreenHeader, SegmentedControl } from '../Basics';
 import { Button } from '../Button';
 import { Icon } from '../Icon';
-import { useCollection, useWork } from '../services';
+import { useCollection, useServices, useWork } from '../services';
 import { Text } from '../Text';
 import { TextField } from '../TextField';
 import { radius, spacing, useTheme } from '../theme';
@@ -43,6 +44,7 @@ import { useToast } from '../Toast';
 import { useBreakpoint } from '../useBreakpoint';
 import { useKeyboardShortcuts } from '../useKeyboardShortcuts';
 import { PaymentDialog } from './PaymentDialog';
+import { ReceiptScanDialog, type ScannedSale } from './ReceiptScanDialog';
 import { ReceiptDialog } from './receipts';
 
 type Section = 'all' | ProductKind | 'set';
@@ -57,9 +59,13 @@ const SECTIONS: { label: string; value: Section }[] = [
 /** Product cards fill the row: as many columns as fit at this width or wider. */
 const MIN_CARD_WIDTH = 200;
 
-/** The counter screen: pick products or sets, choose refill or new cylinder, take payment, print. */
+/**
+ * The counter screen: pick products or sets, choose refill or new cylinder, take payment, print.
+ * Where the device can read receipts, a handwritten receipt can be scanned into the cart instead.
+ */
 export function PosScreen() {
   const work = useWork();
+  const { ocr } = useServices();
   const toast = useToast();
   const { isWide } = useBreakpoint();
   const { data: products } = useCollection<Product>('products');
@@ -69,6 +75,9 @@ export function PosScreen() {
   const [query, setQuery] = useState('');
   const [section, setSection] = useState<Section>('all');
   const [paying, setPaying] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  /** The number of the handwritten receipt the cart was scanned from. */
+  const [slipNo, setSlipNo] = useState<string | null>(null);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [gridWidth, setGridWidth] = useState(0);
   const searchRef = useRef<TextInput>(null);
@@ -112,10 +121,16 @@ export function PosScreen() {
     return `A new ${product} also takes an empty cylinder from the shelf, and ${where} has ${shortage.available} left.`;
   };
 
+  /** Every change to the cart comes through here. An emptied cart forgets the scanned receipt. */
+  const replaceCart = (next: CartLine[]) => {
+    setCart(next);
+    if (next.length === 0) setSlipNo(null);
+  };
+
   const update = (next: CartLine[]) => {
     const shortage = newShortage(next);
     if (shortage) toast.show(stockMessage(shortage), 'error');
-    else setCart(next);
+    else replaceCart(next);
   };
 
   const add = (product: Product) => update(addToCart(lines, product));
@@ -126,7 +141,7 @@ export function PosScreen() {
   const setQty = (line: CartLine, qty: number) => {
     const next = changeQty(lines, indexOf(line), qty);
     if (qty > line.qty) update(next);
-    else setCart(next);
+    else replaceCart(next);
   };
 
   const setType = (line: CartLine, type: ProductLineType) => update(changeType(lines, indexOf(line), type));
@@ -136,10 +151,24 @@ export function PosScreen() {
   };
 
   const complete = async (payment: Payment) => {
-    const sale = await recordSale(work.ctx, { cart: lines, payment });
-    setCart([]);
+    const sale = await recordSale(work.ctx, { cart: lines, payment, slipNo: slipNo ?? undefined });
+    replaceCart([]);
     setPaying(false);
     setLastSale(sale);
+  };
+
+  /**
+   * The lines the cashier confirmed from a scanned receipt become the cart. A
+   * receipt number that was already entered is caught here, while the dialog
+   * still lets the cashier correct it.
+   */
+  const applyScan = async (scanned: ScannedSale) => {
+    const shortage = shortagesOf(scanned.cart)[0];
+    if (shortage) throw new Error(stockMessage(shortage));
+    if (scanned.slipNo) await checkSlipNo(work.ctx, scanned.slipNo);
+    replaceCart(scanned.cart);
+    setSlipNo(scanned.slipNo ?? null);
+    setScanning(false);
   };
 
   const finishReceipt = () => {
@@ -150,10 +179,10 @@ export function PosScreen() {
   useKeyboardShortcuts(
     {
       F2: () => searchRef.current?.focus(),
-      F4: () => setCart([]),
+      F4: () => replaceCart([]),
       F9: charge,
     },
-    !paying && !lastSale,
+    !paying && !lastSale && !scanning,
   );
 
   const catalog = (
@@ -220,9 +249,10 @@ export function PosScreen() {
       priced={priced}
       products={byId}
       total={total}
+      slipNo={lines.length > 0 ? slipNo : null}
       onQty={setQty}
       onType={setType}
-      onClear={() => setCart([])}
+      onClear={() => replaceCart([])}
       onCharge={charge}
       compact={!isWide}
     />
@@ -234,10 +264,15 @@ export function PosScreen() {
         title="Sell"
         subtitle={[work.location?.name, work.user?.displayName].filter(Boolean).join(' · ')}
         actions={
-          Platform.OS === 'web' ? (
-            <Text variant="small" muted>
-              F2 search · F4 clear · F9 charge
-            </Text>
+          Platform.OS === 'web' || ocr ? (
+            <>
+              {Platform.OS === 'web' ? (
+                <Text variant="small" muted>
+                  F2 search · F4 clear · F9 charge
+                </Text>
+              ) : null}
+              {ocr ? <Button title="Scan receipt" icon="scan-outline" variant="secondary" size="sm" onPress={() => setScanning(true)} /> : null}
+            </>
           ) : null
         }
       />
@@ -254,6 +289,16 @@ export function PosScreen() {
       )}
 
       <PaymentDialog visible={paying} total={total} onCancel={() => setPaying(false)} onConfirm={complete} />
+      {ocr ? (
+        <ReceiptScanDialog
+          visible={scanning}
+          products={products.filter((p) => p.active)}
+          sets={Array.from(setsById.values()).filter((set) => set.active)}
+          replacing={lines.length > 0}
+          onCancel={() => setScanning(false)}
+          onConfirm={applyScan}
+        />
+      ) : null}
       <ReceiptDialog sale={lastSale} onClose={finishReceipt} closeLabel="New sale" />
     </View>
   );
@@ -387,6 +432,7 @@ function CartPanel({
   priced,
   products,
   total,
+  slipNo,
   onQty,
   onType,
   onClear,
@@ -397,6 +443,8 @@ function CartPanel({
   priced: SaleLine[];
   products: Map<string, Product>;
   total: number;
+  /** Shown when the cart was scanned from a handwritten receipt. */
+  slipNo: string | null;
   onQty: (line: CartLine, qty: number) => void;
   onType: (line: CartLine, type: ProductLineType) => void;
   onClear: () => void;
@@ -410,6 +458,7 @@ function CartPanel({
       action={lines.length > 0 ? <Button title="Clear" variant="ghost" size="sm" onPress={onClear} shortcut="F4" /> : null}
       style={compact ? styles.cartCompact : styles.cartWide}
     >
+      {slipNo ? <Badge label={`From receipt no. ${slipNo}`} tone="info" icon="receipt-outline" /> : null}
       <ScrollView style={compact ? styles.cartLinesCompact : styles.cartLines} contentContainerStyle={styles.cartLinesContent}>
         {lines.length === 0 ? (
           <EmptyState icon="cart-outline" title="No items yet" message="Tap a product or a set to add it." />

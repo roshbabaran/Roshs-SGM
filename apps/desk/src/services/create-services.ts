@@ -8,6 +8,7 @@ import { createAppServices, once, type PlatformServices } from '@sgm/ui';
 
 import type { SgmBridge } from '../../electron/bridge';
 import { browserPlatform } from './browser';
+import { createDeskScanner } from './ocr';
 
 declare global {
   interface Window {
@@ -54,6 +55,7 @@ async function electronPlatform(bridge: SgmBridge): Promise<PlatformServices> {
       printDocument: (html) => bridge.printer.printDocument(html),
     },
     checkForUpdates: () => bridge.updates.check(),
+    ocr: createDeskScanner(bridge),
   };
 }
 

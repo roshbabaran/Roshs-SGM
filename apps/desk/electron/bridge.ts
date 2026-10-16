@@ -3,7 +3,7 @@
  * these functions (as window.sgm) and nothing else: no file system, no Node.js.
  * Shared by preload.ts (which builds it) and the screens (which call it).
  */
-import type { Collection, PaperWidth, StoreOp, StoreRecord } from '@sgm/core';
+import type { Collection, PaperWidth, PixelImage, StoreOp, StoreRecord, TextResult } from '@sgm/core';
 
 export interface PrinterInfo {
   name: string;
@@ -36,6 +36,10 @@ export interface SgmBridge {
   updates: {
     check(): Promise<string>;
   };
+  /** Reads the writing on a receipt photo (electron/ocr.ts). */
+  ocr: {
+    read(image: PixelImage): Promise<TextResult>;
+  };
 }
 
 /** IPC channel names. */
@@ -51,4 +55,5 @@ export const IPC = {
   printerPrint: 'sgm:printer-print',
   printerPrintDocument: 'sgm:printer-print-document',
   updatesCheck: 'sgm:updates-check',
+  ocrRead: 'sgm:ocr-read',
 } as const;

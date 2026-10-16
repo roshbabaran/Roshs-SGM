@@ -35,6 +35,9 @@ const bridge: SgmBridge = {
   updates: {
     check: () => invoke(IPC.updatesCheck),
   },
+  ocr: {
+    read: (image) => invoke(IPC.ocrRead, { width: image.width, height: image.height, data: image.data }),
+  },
 };
 
 contextBridge.exposeInMainWorld('sgm', bridge);

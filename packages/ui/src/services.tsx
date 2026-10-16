@@ -19,10 +19,12 @@ import {
   type OpContext,
   type PaperWidth,
   type Permission,
+  type PixelImage,
   type SecureStorage,
   type Session,
   type StoreRecord,
   type SyncStatus,
+  type TextResult,
 } from '@sgm/core';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
@@ -53,6 +55,27 @@ export interface ReceiptPrinter {
   printDocument(html: string): Promise<PrintOutcome>;
 }
 
+/** Where a receipt photo comes from: the phone's camera or gallery, or a file on the PC. */
+export type PhotoSource = 'camera' | 'library' | 'file';
+
+/** A photo picked for scanning. */
+export interface ScanPhoto {
+  /** For showing the photo on screen. */
+  uri: string;
+  /** Its pixels, already shrunk to the size the reader works on. */
+  image: PixelImage;
+}
+
+/** Reads photos of handwritten receipts on this device (the reader is in packages/core/src/ocr). */
+export interface ReceiptScanner {
+  /** Where photos can come from here, in the order to offer them. */
+  sources: PhotoSource[];
+  /** Asks for a photo; resolves null when the person cancels. */
+  pickPhoto(source: PhotoSource): Promise<ScanPhoto | null>;
+  /** Finds and reads every line of writing. Rejects with a message for the person when it can't. */
+  readText(image: PixelImage): Promise<TextResult>;
+}
+
 export interface PlatformServices {
   appName: string;
   platform: 'desk' | 'pocket' | 'browser';
@@ -64,6 +87,8 @@ export interface PlatformServices {
   printer: ReceiptPrinter;
   /** Checks for a new version of the app (SGM Desk only). Returns a message for the person. */
   checkForUpdates?: () => Promise<string>;
+  /** Scanning handwritten receipts into a sale. Missing where the reader can't run (Expo Go, the browser preview). */
+  ocr?: ReceiptScanner;
 }
 
 export interface AppServices extends PlatformServices {

@@ -1,0 +1,41 @@
+{
+  "about": "Synthetic receipt written in a handwriting font (IndieFlower-Regular), for the end-to-end test. Products are those in ../test-helpers.ts.",
+  "receiptNo": "6111",
+  "date": "2026-10-09",
+  "writtenDate": "10/9/2026",
+  "total": 565000,
+  "lines": [
+    {
+      "written": "LPG Regulator",
+      "qty": 2,
+      "productId": "regulator",
+      "type": "item",
+      "unitPrice": 45000,
+      "amount": 90000
+    },
+    {
+      "written": "Petron 11kg refill",
+      "qty": 1,
+      "productId": "petron-11",
+      "type": "refill",
+      "unitPrice": 95000,
+      "amount": 95000
+    },
+    {
+      "written": "Fiesta 11kg refill",
+      "qty": 1,
+      "productId": "fiesta-11",
+      "type": "refill",
+      "unitPrice": 90000,
+      "amount": 90000
+    },
+    {
+      "written": "Solane 11kg brand new",
+      "qty": 1,
+      "productId": "solane-11",
+      "type": "new",
+      "unitPrice": 290000,
+      "amount": 290000
+    }
+  ]
+}

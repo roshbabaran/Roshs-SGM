@@ -15,9 +15,14 @@
     "pocket": "npm run start --workspace @sgm/pocket",
     "pocket:android": "npm run android --workspace @sgm/pocket",
     "test": "npm run test --workspace @sgm/core",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "ocr:models": "node scripts/fetch-ocr-models.mjs",
+    "postinstall": "patch-package"
   },
   "engines": {
     "node": ">=22.13"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }

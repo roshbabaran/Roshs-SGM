@@ -9,6 +9,7 @@ export * from './ids';
 export * from './ledger';
 export * from './models';
 export * from './money';
+export * from './ocr';
 export * from './operations';
 export * from './receipt';
 export * from './reports';

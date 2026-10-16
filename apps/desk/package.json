@@ -42,6 +42,7 @@
     "electron-builder": "^26.17.0",
     "electron-updater": "^6.8.10",
     "esbuild": "^0.28.2",
+    "onnxruntime-node": "^1.30.0",
     "typescript": "~6.0.3"
   }
 }

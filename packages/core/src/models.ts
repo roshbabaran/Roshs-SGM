@@ -182,6 +182,8 @@ export interface Sale {
   /** Sales made in the Borrowing window: who owes for it or borrowed a cylinder. */
   borrowerId?: string;
   borrowerName?: string;
+  /** The number printed on the handwritten receipt the sale was scanned from. */
+  slipNo?: string;
   voidReason?: string;
   voidedBy?: string;
   voidedAt?: ISODate;
