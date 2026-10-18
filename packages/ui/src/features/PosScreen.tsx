@@ -65,9 +65,11 @@ const MIN_CARD_WIDTH = 200;
  */
 export function PosScreen() {
   const work = useWork();
-  const { ocr } = useServices();
+  const { ocr, platform } = useServices();
   const toast = useToast();
-  const { isWide } = useBreakpoint();
+  const { isWide, isLandscape, width, height } = useBreakpoint();
+  // A phone on its side gets the desktop layout: products on the left, the sale on the right.
+  const sideBySide = isWide || (platform === 'pocket' && isLandscape);
   const { data: products } = useCollection<Product>('products');
   const { data: sets } = useCollection<ProductSet>('sets');
   const { data: movements } = useCollection<StockMovement>('movements');
@@ -254,7 +256,9 @@ export function PosScreen() {
       onType={setType}
       onClear={() => replaceCart([])}
       onCharge={charge}
-      compact={!isWide}
+      dense={!isWide}
+      // Stacked under the products, the sale takes up to a third of the screen.
+      maxHeight={sideBySide ? undefined : Math.round(height / 3)}
     />
   );
 
@@ -276,10 +280,10 @@ export function PosScreen() {
           ) : null
         }
       />
-      {isWide ? (
+      {sideBySide ? (
         <View style={styles.wide}>
           {catalog}
-          <View style={styles.cartColumn}>{cartPanel}</View>
+          <View style={{ width: isWide ? 400 : Math.round(Math.min(400, Math.max(300, width * 0.42))) }}>{cartPanel}</View>
         </View>
       ) : (
         <View style={styles.narrow}>
@@ -437,7 +441,8 @@ function CartPanel({
   onType,
   onClear,
   onCharge,
-  compact,
+  dense,
+  maxHeight,
 }: {
   lines: CartLine[];
   priced: SaleLine[];
@@ -449,19 +454,26 @@ function CartPanel({
   onType: (line: CartLine, type: ProductLineType) => void;
   onClear: () => void;
   onCharge: () => void;
-  compact: boolean;
+  /** Phones and small windows: a one-line empty message, and the total beside the Charge button. */
+  dense: boolean;
+  /** Set when the sale sits under the products instead of beside them. */
+  maxHeight?: number;
 }) {
   const { colors } = useTheme();
   return (
     <Card
       title="Current sale"
       action={lines.length > 0 ? <Button title="Clear" variant="ghost" size="sm" onPress={onClear} shortcut="F4" /> : null}
-      style={compact ? styles.cartCompact : styles.cartWide}
+      style={maxHeight === undefined ? styles.cartWide : { maxHeight }}
     >
       {slipNo ? <Badge label={`From receipt no. ${slipNo}`} tone="info" icon="receipt-outline" /> : null}
-      <ScrollView style={compact ? styles.cartLinesCompact : styles.cartLines} contentContainerStyle={styles.cartLinesContent}>
+      <ScrollView style={maxHeight === undefined ? styles.cartLines : styles.cartLinesStacked} contentContainerStyle={styles.cartLinesContent}>
         {lines.length === 0 ? (
-          <EmptyState icon="cart-outline" title="No items yet" message="Tap a product or a set to add it." />
+          dense ? (
+            <Text muted>No items yet. Tap a product or a set to add it.</Text>
+          ) : (
+            <EmptyState icon="cart-outline" title="No items yet" message="Tap a product or a set to add it." />
+          )
         ) : (
           lines.map((line, i) => {
             const sale = priced[i];
@@ -514,13 +526,29 @@ function CartPanel({
           })
         )}
       </ScrollView>
-      <View style={[styles.totalRow, { borderTopColor: colors.border }]}>
-        <Text variant="subheading">Total</Text>
-        <Text variant="heading" numeric>
-          {formatPeso(total)}
-        </Text>
-      </View>
-      <Button title="Charge" icon="cash-outline" size="lg" onPress={onCharge} disabled={lines.length === 0} shortcut="F9" fullWidth />
+      {dense ? (
+        <View style={[styles.totalRow, { borderTopColor: colors.border }]}>
+          <View>
+            <Text variant="small" muted>
+              Total
+            </Text>
+            <Text variant="subheading" numeric>
+              {formatPeso(total)}
+            </Text>
+          </View>
+          <Button title="Charge" icon="cash-outline" onPress={onCharge} disabled={lines.length === 0} shortcut="F9" />
+        </View>
+      ) : (
+        <>
+          <View style={[styles.totalRow, { borderTopColor: colors.border }]}>
+            <Text variant="subheading">Total</Text>
+            <Text variant="heading" numeric>
+              {formatPeso(total)}
+            </Text>
+          </View>
+          <Button title="Charge" icon="cash-outline" size="lg" onPress={onCharge} disabled={lines.length === 0} shortcut="F9" fullWidth />
+        </>
+      )}
     </Card>
   );
 }
@@ -553,7 +581,6 @@ const styles = StyleSheet.create({
   wide: { flex: 1, flexDirection: 'row', gap: spacing.lg, minHeight: 0 },
   narrow: { flex: 1, gap: spacing.md, minHeight: 0 },
   catalog: { flex: 1, gap: spacing.md, minHeight: 0 },
-  cartColumn: { width: 400 },
   toolbar: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flexWrap: 'wrap' },
   search: { flexGrow: 1, flexBasis: 220 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, paddingBottom: spacing.lg },
@@ -577,9 +604,8 @@ const styles = StyleSheet.create({
   productInfo: { flex: 1, gap: 4 },
   productBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   cartWide: { flex: 1 },
-  cartCompact: { maxHeight: '55%' },
   cartLines: { flex: 1 },
-  cartLinesCompact: { maxHeight: 220 },
+  cartLinesStacked: { flexShrink: 1 },
   cartLinesContent: { flexGrow: 1 },
   cartLine: { paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth, gap: spacing.sm },
   cartLineTop: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },

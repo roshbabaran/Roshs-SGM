@@ -14,7 +14,7 @@ interface MorePage {
 
 /** Pages that don't fit in the tab bar, in order. Only the ones this person may use are listed. */
 const MORE_PAGES: MorePage[] = [
-  { href: '/more/borrowing', label: 'Borrowing', icon: 'swap-horizontal-outline', permission: 'borrow.manage' },
+  { href: '/more/sales', label: 'Transactions', icon: 'receipt-outline', permission: 'sales.view' },
   { href: '/more/reports', label: 'Reports', icon: 'bar-chart-outline', permission: 'reports.view' },
   { href: '/more/products', label: 'Products', icon: 'pricetags-outline', permission: 'products.manage' },
   { href: '/more/users', label: 'Users', icon: 'people-outline', permission: 'users.manage' },

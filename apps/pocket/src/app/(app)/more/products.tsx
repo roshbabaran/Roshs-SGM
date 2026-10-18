@@ -1,9 +1,11 @@
-import { ProductsScreen, RequirePermission } from '@sgm/ui';
+import { FitTablesToScreen, ProductsScreen, RequirePermission } from '@sgm/ui';
 
 export default function ProductsPage() {
   return (
-    <RequirePermission permission="products.manage">
-      <ProductsScreen />
-    </RequirePermission>
+    <FitTablesToScreen>
+      <RequirePermission permission="products.manage">
+        <ProductsScreen />
+      </RequirePermission>
+    </FitTablesToScreen>
   );
 }

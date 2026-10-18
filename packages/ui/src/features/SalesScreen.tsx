@@ -87,7 +87,7 @@ export function SalesScreen() {
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
-      <ScreenHeader title="Sales" subtitle={`${work.location?.name ?? ''} · ${completed.length} sales · ${formatPeso(total)}`} />
+      <ScreenHeader title="Transactions" subtitle={`${work.location?.name ?? ''} · ${completed.length} sales · ${formatPeso(total)}`} />
       <Card padded>
         <View style={styles.filters}>
           <View style={styles.dateField}>

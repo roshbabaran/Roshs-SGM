@@ -23,7 +23,7 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Badge, Card, ScreenHeader } from '../Basics';
 import { Button } from '../Button';
-import { DataTable, type Column } from '../DataTable';
+import { DataTable, SplitCell, type Column } from '../DataTable';
 import { DateField } from '../DateField';
 import { Icon } from '../Icon';
 import { useCollection, useWork } from '../services';
@@ -97,29 +97,55 @@ function BeforeAfter({ product, change }: { product: Product | undefined; change
   );
 }
 
+const FULL_EMPTY = ['Full', 'Empty'];
+
+/** Full and empty apart for a cylinder; one count across both for an accessory. */
+function LevelCell({ product, level }: { product: Product; level: StockLevel }) {
+  return product.kind === 'cylinder' ? (
+    <SplitCell values={[String(level.full), String(level.empty)]} />
+  ) : (
+    <SplitCell values={[`${level.unit} ${units(level.unit)}`]} />
+  );
+}
+
+function ChangeCell({ product, start, end }: { product: Product; start: StockLevel; end: StockLevel }) {
+  if (product.kind !== 'cylinder') {
+    const diff = end.unit - start.unit;
+    return <SplitCell values={[diff === 0 ? '0' : `${signed(diff)} ${units(diff)}`]} muted={[diff === 0]} />;
+  }
+  const full = end.full - start.full;
+  const empty = end.empty - start.empty;
+  return <SplitCell values={[signed(full), signed(empty)]} muted={[full === 0, empty === 0]} />;
+}
+
 const stockColumns = (endTitle: string): Column<StockRow>[] => [
   { key: 'name', title: 'Product', flex: 2, text: (r) => r.product.name },
-  { key: 'kind', title: 'Type', width: 100, text: (r) => (r.product.kind === 'cylinder' ? 'Cylinder' : 'Accessory') },
   {
     key: 'start',
-    title: 'Start of day',
-    width: 160,
+    title: 'Beg. Stock',
+    width: 150,
+    subColumns: FULL_EMPTY,
     text: (r) => levelText(r.product, r.start),
     sortValue: (r) => sellable(r.product, r.start),
+    render: (r) => <LevelCell product={r.product} level={r.start} />,
   },
   {
     key: 'end',
     title: endTitle,
-    width: 160,
+    width: 150,
+    subColumns: FULL_EMPTY,
     text: (r) => levelText(r.product, r.end),
     sortValue: (r) => sellable(r.product, r.end),
+    render: (r) => <LevelCell product={r.product} level={r.end} />,
   },
   {
     key: 'change',
     title: 'Change',
-    width: 180,
+    width: 150,
+    subColumns: FULL_EMPTY,
     text: (r) => changeText(r.product, r.start, r.end),
     sortValue: (r) => sellable(r.product, r.end) - sellable(r.product, r.start),
+    render: (r) => <ChangeCell product={r.product} start={r.start} end={r.end} />,
   },
   {
     key: 'status',
@@ -135,6 +161,7 @@ const stockColumns = (endTitle: string): Column<StockRow>[] => [
         <Badge label="OK" tone="success" />
       ),
   },
+  { key: 'kind', title: 'Type', width: 100, text: (r) => (r.product.kind === 'cylinder' ? 'Cylinder' : 'Accessory') },
 ];
 
 export function InventoryScreen() {
@@ -224,8 +251,8 @@ export function InventoryScreen() {
         <View style={styles.note}>
           <Text variant="small" muted>
             {isToday
-              ? 'Start of day is the stock at midnight; Now includes every sale and movement since.'
-              : 'Start of day is the stock at midnight; End of day is the stock at the following midnight.'}
+              ? 'Beg. Stock is the stock at the start of the day (midnight); Now includes every sale and movement since.'
+              : 'Beg. Stock is the stock at the start of the day (midnight); End of day is the stock at the following midnight.'}
           </Text>
         </View>
         <DataTable
@@ -234,7 +261,7 @@ export function InventoryScreen() {
           rowKey={(r) => r.product.id}
           searchPlaceholder="Search stock"
           initialSort={{ key: 'name', direction: 'asc' }}
-          minWidth={800}
+          minWidth={820}
         />
       </Card>
       <Card title="Movement history" padded>

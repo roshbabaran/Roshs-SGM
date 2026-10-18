@@ -117,7 +117,7 @@ const styles = StyleSheet.create({
   root: { padding: spacing.xl, gap: spacing.lg },
   tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   columns: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  chartCard: { flexGrow: 2, flexBasis: 480 },
+  chartCard: { flexGrow: 2, flexShrink: 1, flexBasis: 480 },
   sideCard: { flexGrow: 1, flexBasis: 280 },
   listRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth },
   time: { width: 72 },

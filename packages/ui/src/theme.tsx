@@ -29,6 +29,9 @@ const light = {
 
 export type ThemeColors = typeof light;
 
+/** The light-mode colours, for parts that keep them in dark mode too (SGM Pocket's tab bar). */
+export const lightColors: ThemeColors = light;
+
 const dark: ThemeColors = {
   background: '#0E1116',
   surface: '#171B22',

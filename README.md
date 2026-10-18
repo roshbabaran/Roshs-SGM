@@ -8,7 +8,7 @@ Desktop and Mobile Application of the Inventory Management and Point of Sale Sys
 | `apps/desk` | **SGM Desk**, the Windows app for the store counter and the office. React Native screens (Expo, web build) inside Electron, installed with a normal Windows installer. |
 | `apps/pocket` | **SGM Pocket**, the Android and iOS app (Expo) for selling and checking stock away from the counter. |
 | `packages/core` | The business rules both apps share: roles, the stock ledger, sales, receipts, offline sign-in and sync. Has its own tests. |
-| `packages/ui` | The shared components and screens: sidebar layout, tables, forms, dialogs, toasts, charts, receipt preview, and the login, point of sale, borrowing, inventory, sales, reports, products, users and settings screens. |
+| `packages/ui` | The shared components and screens: sidebar layout, tables, forms, dialogs, toasts, charts, receipt preview, and the login, sell, borrowing, inventory, transactions, reports, products, users and settings screens. |
 
 Both apps show the same screens; only the parts that touch the device differ (database, secure storage, printing).
 
@@ -40,7 +40,7 @@ There is no API server yet, so both apps run against a built-in demo server with
 | Username | PIN | Role | Can |
 | --- | --- | --- | --- |
 | `owner` | `1111` | Owner | Everything, including reports, products and sets, users, voiding sales and device settings |
-| `cashier` | `2222` | Employee | Dashboard, sell, borrowing, sales history, view stock |
+| `cashier` | `2222` | Employee | Dashboard, sell, borrowing, transactions, view stock |
 | `warehouse` | `3333` | Warehouse staff | View stock and record movements (deliveries, transfers, damage) |
 
 In SGM Desk, **Settings → Simulate no connection** shows offline mode: sales keep working and sync when the connection returns. **Reset demo data** puts the sample data back. The sample data has three sets and three borrowers; if a device ran the app before they were added, use **Reset demo data** once to see them.
