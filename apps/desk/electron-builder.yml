@@ -16,18 +16,19 @@ files:
 win:
   target: nsis
   icon: build-resources/icon.png
+# One-click and per Windows user (no administrator password), so updates install without asking anyone.
 nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+  oneClick: true
+  perMachine: false
   createDesktopShortcut: true
   shortcutName: SGM Desk
   artifactName: SGM-Desk-Setup-${version}.${ext}
-# Automatic updates are off until there is somewhere to publish new versions.
-# To turn them on with GitHub Releases, replace "null" with:
-#   provider: github
-#   owner: NathBajamunde
-#   repo: SGM-Desktop-Mobile
-publish: null
+# Automatic updates: installed copies ask the SGM API, which serves the files from the private
+# releases repo to signed-in, approved PCs (electron/updates.ts). This also makes each build write
+# latest.yml next to the installer; upload all three with "npm run desk:release".
+publish:
+  provider: generic
+  url: https://cmpyttciealvhgkpuhoq.supabase.co/functions/v1/api/updates/desk
 
 # Receipt scanning: scripts/stage-ocr.cjs gathers the models and ONNX Runtime
 # into build/ocr before packing, and these copy them into resources/.

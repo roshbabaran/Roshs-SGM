@@ -57,7 +57,7 @@ export function DashboardScreen() {
         <StatTile
           label="Low on stock"
           value={String(low.length)}
-          hint={low.length > 0 ? 'Needs a delivery or transfer' : 'All items above minimum'}
+          hint={low.length > 0 ? 'Needs stock from the depot or another branch' : 'All items above minimum'}
           icon="cube-outline"
           tone={low.length > 0 ? 'warning' : 'success'}
         />

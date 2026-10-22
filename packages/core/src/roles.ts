@@ -17,6 +17,7 @@ export const PERMISSIONS = [
   'products.manage',
   'users.manage',
   'settings.device',
+  'backups.manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -41,6 +42,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   'products.manage': 'Change products, prices and sets',
   'users.manage': 'Manage users',
   'settings.device': 'Change device settings',
+  'backups.manage': 'Make and open backups',
 };
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {

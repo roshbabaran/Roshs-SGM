@@ -3,7 +3,7 @@
  * through the preload bridge (window.sgm). In a plain browser ("npm run
  * desk:web", for working on screens) a stand-in keeps data in the browser.
  */
-import { DemoApi, HttpApi, ObservableStore, type ApiClient, type Collection, type LocalStore, type StoreOp, type StoreRecord } from '@sgm/core';
+import { appHeader, DemoApi, HttpApi, ObservableStore, type ApiClient, type Collection, type LocalStore, type StoreOp, type StoreRecord } from '@sgm/core';
 import { createAppServices, once, type PlatformServices } from '@sgm/ui';
 
 import type { SgmBridge } from '../../electron/bridge';
@@ -16,10 +16,10 @@ declare global {
   }
 }
 
-/** The SGM API server, or the built-in demo server when no address is set. */
-export function createApi(): ApiClient {
+/** The SGM API server, or the built-in demo server when no address is set. `version` is this installed copy's. */
+export function createApi(version?: string): ApiClient {
   const url = process.env.EXPO_PUBLIC_API_URL;
-  return url ? new HttpApi(url) : new DemoApi();
+  return url ? new HttpApi(url, { app: version ? appHeader('desk', version) : undefined }) : new DemoApi();
 }
 
 /** The SQLite database in Electron's main process. */
@@ -47,7 +47,7 @@ async function electronPlatform(bridge: SgmBridge): Promise<PlatformServices> {
     appVersion: info.version,
     deviceId: info.deviceId,
     store: new ObservableStore(new DesktopStore(bridge)),
-    api: createApi(),
+    api: createApi(info.version),
     secure: bridge.secure,
     printer: {
       listPrinters: () => bridge.printer.list(),
@@ -55,6 +55,8 @@ async function electronPlatform(bridge: SgmBridge): Promise<PlatformServices> {
       printDocument: (html) => bridge.printer.printDocument(html),
     },
     checkForUpdates: () => bridge.updates.check(),
+    updates: { available: () => bridge.updates.ready(), install: () => bridge.updates.install() },
+    backups: bridge.backups,
     ocr: createDeskScanner(bridge),
   };
 }

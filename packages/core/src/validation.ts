@@ -37,14 +37,14 @@ export type ManualMovementType = (typeof MANUAL_MOVEMENT_TYPES)[number];
 
 export const MOVEMENT_LABELS: Record<MovementType, string> = {
   OPENING: 'Opening stock',
-  DELIVERY_IN: 'Delivery from supplier',
+  DELIVERY_IN: 'From Depot',
   SALE: 'Sale',
   EMPTY_IN: 'Empty received (refill)',
-  TRANSFER_OUT: 'Transfer out',
-  TRANSFER_IN: 'Transfer in',
-  ADJUSTMENT: 'Count adjustment',
-  DAMAGED: 'Damaged / condemned',
-  RETURN_TO_SUPPLIER: 'Return to supplier',
+  TRANSFER_OUT: 'Stocks Out',
+  TRANSFER_IN: 'Stocks In',
+  ADJUSTMENT: 'Adjustment',
+  DAMAGED: 'Defective',
+  RETURN_TO_SUPPLIER: 'To Depot',
   CYLINDER_RETURN: 'Cylinder returned',
   VOID_REVERSAL: 'Voided sale',
 };

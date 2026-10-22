@@ -18,7 +18,7 @@ import { Banner, Card, ScreenHeader, SegmentedControl } from '../Basics';
 import { Button } from '../Button';
 import { ConfirmDialog } from '../Dialog';
 import { Select } from '../Select';
-import { useServices, useSyncStatus, useWork, type PrinterInfo } from '../services';
+import { useServices, useSyncStatus, useWork, type AppServices, type BackupInfo, type PrinterInfo } from '../services';
 import { SyncStatusBadge } from '../SyncStatusBadge';
 import { Text } from '../Text';
 import { monoFont, spacing } from '../theme';
@@ -34,6 +34,56 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
       </Text>
       <View style={styles.rowValue}>{typeof children === 'string' ? <Text>{children}</Text> : children}</View>
     </View>
+  );
+}
+
+/** Weekly and on-demand copies of this PC's data, for the owner and admins (backups.manage). */
+function BackupsCard({ backups }: { backups: NonNullable<AppServices['backups']> }) {
+  const toast = useToast();
+  const [info, setInfo] = useState<BackupInfo | null>(null);
+  const [working, setWorking] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    backups.info().then(
+      (i) => active && setInfo(i),
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [backups]);
+
+  const backUp = async () => {
+    setWorking(true);
+    try {
+      setInfo(await backups.create());
+      toast.show('Backup saved.', 'success');
+    } catch (e) {
+      toast.show(`Couldn't back up: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const openFolder = async () => {
+    try {
+      await backups.openFolder();
+    } catch (e) {
+      toast.show(`Couldn't open the backups folder: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    }
+  };
+
+  return (
+    <Card title="Backups" style={styles.card}>
+      <Text muted>SGM Desk saves a copy of this PC's data every week and keeps the newest 12.</Text>
+      <Row label="Last backup">{info?.lastAt ? formatDateTime(info.lastAt) : 'None yet'}</Row>
+      <Row label="Backups kept">{info ? String(info.count) : ''}</Row>
+      <View style={styles.actions}>
+        <Button title="Back up now" icon="save-outline" variant="secondary" onPress={backUp} loading={working} />
+        <Button title="Open backups folder" icon="folder-open-outline" variant="secondary" onPress={openFolder} />
+      </View>
+    </Card>
   );
 }
 
@@ -224,6 +274,8 @@ export function SettingsScreen() {
             </>
           ) : null}
         </Card>
+
+        {services.backups && work.can('backups.manage') ? <BackupsCard backups={services.backups} /> : null}
 
         {demo && canChange ? (
           <Card title="Demo data" style={styles.card}>

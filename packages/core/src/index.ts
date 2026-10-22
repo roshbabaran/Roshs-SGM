@@ -1,4 +1,5 @@
 export * from './api';
+export * from './app-policy';
 export * from './borrowing';
 export * from './cart';
 export * from './catalog';

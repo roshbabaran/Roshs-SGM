@@ -6,6 +6,11 @@
  *   POST /auth/login   { username, pin, deviceId }  -> LoginResult
  *   POST /sync/push    { entries: OutboxEntry[] }   -> PushResult
  *   GET  /sync/pull?cursor=...                      -> PullResult
+ *   GET  /app/status                                -> AppStatus (app-policy.ts)
+ *
+ * Every request names the app and its version in the X-SGM-App header
+ * ("desk/1.2.0"). When the owner has turned SGM off or this version is too old,
+ * the server refuses sign-in and sync with 423 or 426.
  *
  * The server must check the user's role and branch on every request. For each
  * pushed entry, the permission depends on its collection:
@@ -14,6 +19,7 @@
  *   products, sets: products.manage
  *   borrowers, loans: borrow.manage (credit, cylinders lent and returned, payments)
  */
+import type { AppStatus } from './app-policy';
 import type { Borrower, ISODate, LoanEntry, Location, OutboxEntry, Product, ProductSet, Sale, StockMovement, User } from './models';
 
 export interface LoginResult {
@@ -43,7 +49,8 @@ export interface PullResult {
   changes: PulledChange[];
 }
 
-export type ApiErrorKind = 'network' | 'auth' | 'rejected' | 'server';
+/** "blocked": the owner turned SGM off, or this version must update first. */
+export type ApiErrorKind = 'network' | 'auth' | 'rejected' | 'server' | 'blocked';
 
 export class ApiError extends Error {
   constructor(
@@ -61,6 +68,8 @@ export interface ApiClient {
   login(username: string, pin: string, deviceId: string): Promise<LoginResult>;
   push(entries: OutboxEntry[], token: string): Promise<PushResult>;
   pull(cursor: string | null, token: string): Promise<PullResult>;
+  /** Whether the owner lets this version of the app run (sgm.app_policy). */
+  appStatus(): Promise<AppStatus>;
 }
 
 export class HttpApi implements ApiClient {
@@ -68,7 +77,7 @@ export class HttpApi implements ApiClient {
 
   constructor(
     private readonly baseUrl: string,
-    private readonly timeoutMs = 15_000,
+    private readonly options: { /** This app and its version, from appHeader(). */ app?: string; timeoutMs?: number } = {},
   ) {}
 
   login(username: string, pin: string, deviceId: string): Promise<LoginResult> {
@@ -84,9 +93,13 @@ export class HttpApi implements ApiClient {
     return this.request<PullResult>('GET', `/sync/pull${query}`, undefined, token);
   }
 
+  appStatus(): Promise<AppStatus> {
+    return this.request<AppStatus>('GET', '/app/status');
+  }
+
   private async request<T>(method: string, path: string, body?: unknown, token?: string): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 15_000);
     let response: Response;
     try {
       response = await fetch(this.baseUrl.replace(/\/+$/, '') + path, {
@@ -94,6 +107,7 @@ export class HttpApi implements ApiClient {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(this.options.app ? { 'X-SGM-App': this.options.app } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
@@ -104,6 +118,10 @@ export class HttpApi implements ApiClient {
       clearTimeout(timer);
     }
     if (response.status === 401) throw new ApiError('auth', 'Your sign-in has expired. Sign in again.', 401);
+    if (response.status === 423 || response.status === 426) {
+      const text = await response.text().catch(() => '');
+      throw new ApiError('blocked', text || 'SGM is not available on this device right now.', response.status);
+    }
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       throw new ApiError(response.status >= 500 ? 'server' : 'rejected', text || `Server error ${response.status}`, response.status);

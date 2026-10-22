@@ -45,6 +45,11 @@ export function openLocalDb(file: string) {
       }
     },
 
+    /** Writes a consistent copy of the whole database to a new file (used for backups). */
+    copyTo(file: string): void {
+      db.prepare('VACUUM INTO ?').run(file);
+    },
+
     close(): void {
       db.close();
     },

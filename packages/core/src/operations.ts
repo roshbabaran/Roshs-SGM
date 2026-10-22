@@ -257,7 +257,7 @@ export async function recordMovement(ctx: OpContext, input: MovementInput): Prom
   const product = await ctx.store.get<Product>('products', input.productId);
   if (!product) throw new Error('That product no longer exists.');
   if ((input.type === 'TRANSFER_IN' || input.type === 'TRANSFER_OUT') && input.counterpartLocationId === ctx.locationId) {
-    throw new Error('Choose a different branch or warehouse for a transfer.');
+    throw new Error('Choose a different branch or warehouse for Stocks In or Stocks Out.');
   }
 
   const condition = product.kind === 'accessory' ? 'unit' : input.condition === 'unit' ? 'full' : input.condition;
@@ -334,7 +334,7 @@ export async function voidSale(ctx: OpContext, saleId: string, reason: string): 
         const stillOut = theirs.filter((e) => e.productId === entry.productId).reduce((sum, e) => sum + (e.qty ?? 0), 0);
         if (stillOut < (entry.qty ?? 0)) {
           throw new Error(
-            "The cylinder borrowed in this sale has already been returned, so the sale can't be voided. Record a count adjustment in Inventory instead.",
+            "The cylinder borrowed in this sale has already been returned, so the sale can't be voided. Record an Adjustment in Inventory instead.",
           );
         }
       }

@@ -2,7 +2,13 @@
   "expo": {
     "name": "SGM Pocket",
     "slug": "sgm-pocket",
-    "version": "0.1.0",
+    "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d8388113-5852-4eb3-9775-4897a6bb816a"
+    },
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "sgmpocket",
@@ -17,6 +23,10 @@
     },
     "android": {
       "package": "ph.sibugaygas.sgmpocket",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.REQUEST_INSTALL_PACKAGES"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0F1B33"
@@ -44,6 +54,13 @@
     ],
     "experiments": {
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d8388113-5852-4eb3-9775-4897a6bb816a"
+      }
+    },
+    "owner": "sazoverse"
   }
 }

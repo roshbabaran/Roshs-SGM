@@ -14,6 +14,7 @@ apps/pocket/ios/
 # SGM Desk build output
 apps/desk/build/
 apps/desk/release/
+apps/pocket/release/
 
 # Local settings (server address, keys)
 .env*.local
@@ -32,3 +33,6 @@ Thumbs.db
 
 # Receipt reading models (npm run ocr:models)
 /models/ocr/
+
+# Supabase CLI working files (supabase link, functions deploy)
+supabase/.temp/

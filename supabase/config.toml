@@ -1,0 +1,10 @@
+# Supabase CLI settings for SGM. Only the API function is deployed from here:
+#   npx supabase functions deploy api --no-verify-jwt --use-api --project-ref <Project ID>
+# The database is set up once by running schema.sql in the Supabase SQL Editor.
+project_id = "sgm"
+
+[functions.api]
+enabled = true
+# The apps send SGM's own sign-in token, not a Supabase one, so the function checks it itself.
+verify_jwt = false
+entrypoint = "./functions/api/index.ts"

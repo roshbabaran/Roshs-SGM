@@ -30,4 +30,4 @@ export const NEW_SALE_TAKES_EMPTY = true;
 export const OFFLINE_GRACE_HOURS = 72;
 
 /** How often each device tries to send and receive changes. */
-export const SYNC_INTERVAL_MS = 30_000;
+export const SYNC_INTERVAL_MS = 60_000;

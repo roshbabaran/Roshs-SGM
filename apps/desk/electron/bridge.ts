@@ -11,6 +11,13 @@ export interface PrinterInfo {
   description?: string;
 }
 
+/** The backups made on this PC (electron/backups.ts). */
+export interface BackupInfo {
+  folder: string;
+  count: number;
+  lastAt: string | null;
+}
+
 export interface SgmBridge {
   app: {
     info(): Promise<{ version: string; deviceId: string; platform: string }>;
@@ -34,7 +41,18 @@ export interface SgmBridge {
     printDocument(html: string): Promise<'sent' | 'cancelled'>;
   };
   updates: {
+    /** For the "Check for updates" button: a message for the person. */
     check(): Promise<string>;
+    /** The downloaded version waiting to install, or null. */
+    ready(): Promise<string | null>;
+    /** Restarts on the downloaded version, or downloads it first. Resolves a message for the person. */
+    install(): Promise<string>;
+  };
+  /** Weekly and on-demand copies of the local database. Only for people with backups.manage. */
+  backups: {
+    info(): Promise<BackupInfo>;
+    create(): Promise<BackupInfo>;
+    openFolder(): Promise<void>;
   };
   /** Reads the writing on a receipt photo (electron/ocr.ts). */
   ocr: {
@@ -55,5 +73,10 @@ export const IPC = {
   printerPrint: 'sgm:printer-print',
   printerPrintDocument: 'sgm:printer-print-document',
   updatesCheck: 'sgm:updates-check',
+  updatesReady: 'sgm:updates-ready',
+  updatesInstall: 'sgm:updates-install',
+  backupsInfo: 'sgm:backups-info',
+  backupsCreate: 'sgm:backups-create',
+  backupsOpen: 'sgm:backups-open',
   ocrRead: 'sgm:ocr-read',
 } as const;

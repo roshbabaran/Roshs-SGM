@@ -34,6 +34,13 @@ const bridge: SgmBridge = {
   },
   updates: {
     check: () => invoke(IPC.updatesCheck),
+    ready: () => invoke(IPC.updatesReady),
+    install: () => invoke(IPC.updatesInstall),
+  },
+  backups: {
+    info: () => invoke(IPC.backupsInfo),
+    create: () => invoke(IPC.backupsCreate),
+    openFolder: () => invoke(IPC.backupsOpen),
   },
   ocr: {
     read: (image) => invoke(IPC.ocrRead, { width: image.width, height: image.height, data: image.data }),

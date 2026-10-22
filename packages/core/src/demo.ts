@@ -4,6 +4,7 @@
  * HttpApi (set EXPO_PUBLIC_API_URL) and load real products from the server.
  */
 import { ApiError, type ApiClient, type LoginResult, type PullResult, type PushResult } from './api';
+import { APP_STATUS_OK, type AppStatus } from './app-policy';
 import { priceCart, saleMovements, type CartLine } from './cart';
 import { levelOf, sellable, stockByProduct } from './ledger';
 import type { Borrower, LoanEntry, Location, OutboxEntry, Payment, Product, ProductSet, Sale, StockMovement, User } from './models';
@@ -346,6 +347,10 @@ export class DemoApi implements ApiClient {
   async pull(cursor: string | null): Promise<PullResult> {
     await this.roundTrip();
     return { cursor: cursor ?? 'demo', changes: [] };
+  }
+
+  async appStatus(): Promise<AppStatus> {
+    return APP_STATUS_OK;
   }
 
   private async roundTrip(): Promise<void> {

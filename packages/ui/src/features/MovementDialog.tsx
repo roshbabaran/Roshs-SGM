@@ -34,7 +34,7 @@ const blankForm = (): MovementForm => ({
   counterpartLocationId: '',
 });
 
-/** Records a delivery, transfer, count adjustment, damaged cylinder or return. */
+/** Records stock from or to the depot, stocks in or out, an adjustment or a defective cylinder. */
 export function MovementDialog({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const work = useWork();
   const toast = useToast();

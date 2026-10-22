@@ -22,7 +22,8 @@ export interface Session {
   offlineUntil: ISODate;
 }
 
-const SESSION_KEY = 'sgm.session';
+/** Where the session is saved in SecureStorage. SGM Desk's main process and SGM Pocket's updater read the token from it. */
+export const SESSION_KEY = 'sgm.session';
 
 type Listener = (session: Session | null) => void;
 

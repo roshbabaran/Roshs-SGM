@@ -29,6 +29,7 @@ import {
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
+import { AppGate } from './AppGate';
 import { Text } from './Text';
 import { spacing, useTheme } from './theme';
 
@@ -76,6 +77,13 @@ export interface ReceiptScanner {
   readText(image: PixelImage): Promise<TextResult>;
 }
 
+/** Where this device keeps its backups, how many there are and when the newest was made. */
+export interface BackupInfo {
+  folder: string;
+  count: number;
+  lastAt: string | null;
+}
+
 export interface PlatformServices {
   appName: string;
   platform: 'desk' | 'pocket' | 'browser';
@@ -85,8 +93,21 @@ export interface PlatformServices {
   api: ApiClient;
   secure: SecureStorage;
   printer: ReceiptPrinter;
-  /** Checks for a new version of the app (SGM Desk only). Returns a message for the person. */
+  /** Checks for a new version of the app. Returns a message for the person. */
   checkForUpdates?: () => Promise<string>;
+  /** Newer versions of the installed app (missing in development and the browser preview). */
+  updates?: {
+    /** Looks for a newer version; resolves its number once it can be installed, otherwise null. */
+    available(): Promise<string | null>;
+    /** Installs it (SGM Desk restarts; SGM Pocket opens Android's installer). Resolves a message for the person. */
+    install(): Promise<string>;
+  };
+  /** Copies of this device's data, weekly and on demand (SGM Desk only; needs backups.manage). */
+  backups?: {
+    info(): Promise<BackupInfo>;
+    create(): Promise<BackupInfo>;
+    openFolder(): Promise<void>;
+  };
   /** Scanning handwritten receipts into a sale. Missing where the reader can't run (Expo Go, the browser preview). */
   ocr?: ReceiptScanner;
 }
@@ -131,7 +152,7 @@ export function once<T>(fn: () => Promise<T>): () => Promise<T> {
 
 const ServicesContext = createContext<AppServices | null>(null);
 
-/** Shows a loading screen while the app opens its database, then provides the services. */
+/** Shows a loading screen while the app opens its database, then provides the services (behind AppGate, the owner's on/off switch). */
 export function ServicesBoundary({ create, children }: { create: () => Promise<AppServices>; children: ReactNode }) {
   const { colors } = useTheme();
   const [services, setServices] = useState<AppServices | null>(null);
@@ -166,7 +187,11 @@ export function ServicesBoundary({ create, children }: { create: () => Promise<A
       </View>
     );
   }
-  return <ServicesContext.Provider value={services}>{children}</ServicesContext.Provider>;
+  return (
+    <ServicesContext.Provider value={services}>
+      <AppGate>{children}</AppGate>
+    </ServicesContext.Provider>
+  );
 }
 
 export function useServices(): AppServices {

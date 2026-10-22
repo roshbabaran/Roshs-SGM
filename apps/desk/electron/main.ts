@@ -1,23 +1,24 @@
 /**
  * SGM Desk's main process. It opens the window and owns everything that touches
- * the PC: the offline database, the encrypted sign-in token, the printer and
- * the receipt reader.
+ * the PC: the offline database and its backups, the encrypted sign-in token,
+ * the printer, the receipt reader and updates.
  * The screens can only reach these through the functions in preload.ts, and
  * every request is checked here first.
  */
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, session, shell, type WebContents } from 'electron';
 import path from 'node:path';
 
-import { isCollection, type StoreOp } from '@sgm/core';
+import { can, isCollection, SESSION_KEY, type Session, type StoreOp, type User } from '@sgm/core';
 
 import { APP_URL, contentSecurityPolicy, isAppUrl, registerAppScheme, serveApp } from './app-protocol';
+import { createBackups } from './backups';
 import { IPC } from './bridge';
 import { loadDeviceId } from './device';
 import { openLocalDb } from './local-db';
 import { checkPixels, createOcrReader } from './ocr';
 import { listPrinters, printDocument, printReceipt } from './printing';
 import { createSecureStore } from './secure-store';
-import { checkForUpdates, checkForUpdatesInBackground } from './updates';
+import { checkForUpdates, installUpdate, startUpdates, updateReady } from './updates';
 
 /** Set by scripts/dev.mjs while developing; ignored by the installed app. */
 const devServerUrl = !app.isPackaged ? (process.env.SGM_DEV_SERVER_URL ?? null) : null;
@@ -51,6 +52,7 @@ function start(): void {
   const secure = createSecureStore(path.join(dataDir, 'secure.json'));
   const deviceId = loadDeviceId(path.join(dataDir, 'device.json'));
   const ocr = createOcrReader();
+  const backups = createBackups(path.join(dataDir, 'Backups'), db);
   app.on('will-quit', () => {
     db.close();
     ocr.close();
@@ -96,13 +98,46 @@ function start(): void {
     return printDocument(html);
   });
 
+  /** The signed-in session, while it is still allowed offline. */
+  const currentSession = (): Session | null => {
+    try {
+      const session = JSON.parse(secure.getItem(SESSION_KEY) ?? 'null') as Session | null;
+      return session && new Date(session.offlineUntil) > new Date() ? session : null;
+    } catch {
+      return null;
+    }
+  };
+  /** Backups hold every sale and loan, so only the owner and people given backups.manage may make or open them. */
+  const requireBackupRights = () => {
+    const session = currentSession();
+    const user = session ? ((db.get('users', session.user.id) as User | null) ?? session.user) : null;
+    if (!can(user, 'backups.manage')) throw new Error('Only the owner or an admin can make and open backups.');
+  };
+
   handle(IPC.updatesCheck, () => checkForUpdates());
+  handle(IPC.updatesReady, () => updateReady());
+  handle(IPC.updatesInstall, () => installUpdate());
+
+  handle(IPC.backupsInfo, () => {
+    requireBackupRights();
+    return backups.info();
+  });
+  handle(IPC.backupsCreate, () => {
+    requireBackupRights();
+    return backups.create();
+  });
+  handle(IPC.backupsOpen, async () => {
+    requireBackupRights();
+    const problem = await shell.openPath(backups.info().folder);
+    if (problem) throw new Error(problem);
+  });
 
   handle(IPC.ocrRead, ([image]) => ocr.read(checkPixels(image)));
 
   if (!devServerUrl) Menu.setApplicationMenu(null);
   createWindow();
-  checkForUpdatesInBackground();
+  startUpdates({ apiUrl, token: () => currentSession()?.token ?? null });
+  backups.startWeekly();
 }
 
 function createWindow(): void {

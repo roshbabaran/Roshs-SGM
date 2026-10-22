@@ -3,13 +3,16 @@
  * phone's secure storage for the sign-in token, the system print dialog, and
  * the camera and on-phone reader for scanning handwritten receipts.
  */
-import { DemoApi, HttpApi, ObservableStore, setUuidGenerator } from '@sgm/core';
+import { appHeader, DemoApi, HttpApi, ObservableStore, setUuidGenerator } from '@sgm/core';
 import { createAppServices, once } from '@sgm/ui';
+import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Crypto from 'expo-crypto';
 import * as Print from 'expo-print';
 import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
 
+import { createApkUpdates } from './apk-updates';
 import { createPocketScanner } from './ocr';
 import { openSqliteStore } from './sqlite-store';
 
@@ -30,13 +33,17 @@ async function loadDeviceId(): Promise<string> {
 
 export const createPocketServices = once(async () => {
   const apiUrl = process.env.EXPO_PUBLIC_API_URL;
+  // The installed APK's version, which only a new APK changes (screen updates over the air keep it).
+  const appVersion = Application.nativeApplicationVersion ?? Constants.expoConfig?.version ?? '0.0.0';
+  const platform = Platform.OS === 'ios' ? 'ios' : 'android';
+  const apkUpdates = apiUrl && Platform.OS === 'android' && !__DEV__ ? createApkUpdates(apiUrl) : undefined;
   return createAppServices({
     appName: 'SGM Pocket',
     platform: 'pocket',
-    appVersion: Constants.expoConfig?.version ?? '0.0.0',
+    appVersion,
     deviceId: await loadDeviceId(),
     store: new ObservableStore(await openSqliteStore('sgm.db')),
-    api: apiUrl ? new HttpApi(apiUrl) : new DemoApi(),
+    api: apiUrl ? new HttpApi(apiUrl, { app: appHeader(platform, appVersion) }) : new DemoApi(),
     secure: {
       getItem: (key) => SecureStore.getItemAsync(key),
       setItem: (key, value) => SecureStore.setItemAsync(key, value),
@@ -48,6 +55,8 @@ export const createPocketServices = once(async () => {
       print: (html) => Print.printAsync({ html }),
       printDocument: (html) => Print.printAsync({ html }).then(() => 'opened' as const),
     },
+    checkForUpdates: apkUpdates?.install,
+    updates: apkUpdates,
     ocr: createPocketScanner(),
   });
 });
