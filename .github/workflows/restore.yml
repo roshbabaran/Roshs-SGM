@@ -1,0 +1,49 @@
+# Replaces SGM's server data with one of the nightly backups in Google Drive. Only runs from the "Run workflow"
+# button, and only with the SGM_RESTORE_DATABASE_URL secret, which is added just for the restore and removed after.
+# Steps: "Server backups" in README.md. The work is in scripts/backup/restore.sh.
+name: Restore the database from a backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup:
+        description: 'Backup to restore, as named in the SGM Backups folder (for example: SGM backup 2026-10-22.dump)'
+        required: true
+      confirm:
+        description: 'Type RESTORE to replace everything on the server with this backup'
+        required: true
+
+concurrency:
+  group: database-backup
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: inputs.confirm == 'RESTORE'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 tools and rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 rclone
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+
+      - name: Download the backup
+        run: rclone copyto "gdrive:SGM Backups/$BACKUP" "$RUNNER_TEMP/backup.dump"
+        env:
+          BACKUP: ${{ inputs.backup }}
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
+
+      - name: Restore
+        run: bash scripts/backup/restore.sh "$RUNNER_TEMP/backup.dump"
+        env:
+          SGM_RESTORE_DATABASE_URL: ${{ secrets.SGM_RESTORE_DATABASE_URL }}

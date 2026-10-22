@@ -107,7 +107,49 @@ SGM Desk copies its local database into a `Backups` folder in the Windows accoun
 select sgm.set_extra_permissions('maria', array['backups.manage']);
 ```
 
-A backup holds everything that PC has synced plus changes not yet sent; it opens in any SQLite viewer. Other Windows accounts on the PC can't open the folder, but anyone using the same Windows account can, so give each cashier their own Windows account if that matters. The server's own copy is Supabase's backups (Pro plan).
+A backup holds everything that PC has synced plus changes not yet sent; it opens in any SQLite viewer. Other Windows accounts on the PC can't open the folder, but anyone using the same Windows account can, so give each cashier their own Windows account if that matters. The server's copy is the nightly backup below.
+
+### Server backups
+
+Every night at 11 PM (Philippine time) a GitHub Action, `.github/workflows/backup.yml`, backs up the server's data to a **SGM Backups** folder in Google Drive. It runs on GitHub, so no PC, phone or app needs to be on. It dumps the `sgm` schema with `pg_dump`, restores the file into an empty database to prove it works, uploads it as `SGM backup <date>.dump`, and deletes old ones: it keeps the newest 30, plus the first backup of each of the last 12 months (`scripts/backup/prune.mjs`). Deleted backups go to Drive's trash for 30 days. Each run uses about two of the 2,000 GitHub Actions minutes a private repository gets free each month, and a backup is small (about 20 KB today).
+
+The **Actions** tab shows every run and, on each run's page, how many records the backup holds. **Run workflow** on "Back up the database" makes one now. If a nightly backup fails, GitHub emails whoever last changed its schedule in the workflow file (unless they've turned those emails off).
+
+A backup holds everything on the server, including PIN hashes and customers' names, so keep the Drive folder private.
+
+#### Setting it up
+
+1. **A read-only login for the backup.** In the SQL Editor, create it with a long random password, then run `scripts/backup/backup-login.sql`:
+
+   ```sql
+   create role sgm_backup login bypassrls password '<password>';
+   ```
+
+   Its connection string is the **Session pooler** one from the dashboard's **Connect** button, with the user changed to `sgm_backup.<Project ID>` and that password: `postgresql://sgm_backup.<Project ID>:<password>@aws-<n>-<region>.pooler.supabase.com:5432/postgres`. (GitHub's runners have no IPv6, so the direct `db.<Project ID>.supabase.co` address doesn't work from there.)
+2. **Permission to write to your Google Drive.** On a PC, install [rclone](https://rclone.org) (`winget install Rclone.Rclone`), open a new terminal and run the command below. A browser opens; sign in with the Google account whose Drive should hold the backups and allow access. `drive.file` lets the backup see only the files it makes, not the rest of your Drive.
+
+   ```sh
+   rclone config create gdrive drive scope=drive.file
+   rclone config show gdrive
+   ```
+
+   Copy the part after `token = `, from `{` to `}`. Don't make the SGM Backups folder yourself: the first backup makes it, and a folder made any other way is invisible to it.
+3. **The secrets.** In the repository on GitHub, **Settings → Secrets and variables → Actions → New repository secret**: `SGM_BACKUP_DATABASE_URL` (step 1) and `GDRIVE_TOKEN` (step 2).
+4. **Try it.** **Actions → Back up the database → Run workflow**, then check the SGM Backups folder in Drive.
+
+If the backups start failing with a Google sign-in error (for example after rclone's access is removed in the Google account's security settings), make a new token (step 2) and replace `GDRIVE_TOKEN`.
+
+#### Restoring a backup
+
+A restore replaces everything in the `sgm` schema with the backup, in one transaction: if anything goes wrong, nothing changes. Everything that reached the server after that backup is lost from the server. A PC or phone that made or downloaded those changes keeps them on the device, but they don't sync back. If `schema.sql` has gained tables since the backup was made, the restore stops and changes nothing.
+
+1. In **Project Settings → Database**, note or reset the database password, and add the secret `SGM_RESTORE_DATABASE_URL`: the **Session pooler** connection string with the `postgres.<Project ID>` user and that password. It can change everything, so it's only kept while restoring.
+2. **Actions → Restore the database from a backup → Run workflow**. Enter the backup's name as it appears in Drive, for example `SGM backup 2026-10-22.dump`, and type `RESTORE`.
+3. Delete the `SGM_RESTORE_DATABASE_URL` secret.
+
+The PCs and phones don't need anything done. The restore renumbers the sync order (`scripts/backup/after-restore.sql`), so each device downloads the restored data again by itself within about ten minutes.
+
+To restore into a new Supabase project instead (if the old one is gone), skip running `schema.sql`, since the backup creates the tables, and restore with the new project's connection string. Then deploy the API, set its secret and point the apps at it, as in [The server (Supabase)](#the-server-supabase), and create the backup login again. Without GitHub, `scripts/backup/restore.sh` does the same on any computer with PostgreSQL 17's tools and bash.
 
 ## How it works
 
@@ -146,11 +188,12 @@ The API server must allow requests from the origin `app://sgm` (CORS), and from 
 | The Windows installer and where it looks for updates | `apps/desk/electron-builder.yml` |
 | SGM Pocket's builds (server address, CPU type, update channel) | `apps/pocket/eas.json` |
 | Who may make and open backups | `backups.manage` in `packages/core/src/roles.ts`, and `sgm.set_extra_permissions` |
+| When the server backup runs, and how many are kept | `.github/workflows/backup.yml` and `scripts/backup/prune.mjs` |
 | How receipts are read (photo checks, thresholds, matching) | `packages/core/src/ocr/` (see its `README.md`) |
 
 ## Next steps
 
-1. Before the store relies on it, move the Supabase project to the Pro plan: the free plan has no backups and pauses after a week without use.
+1. Before the store relies on it, move the Supabase project to the Pro plan: the free plan pauses after a week without use and keeps no backups of its own (the nightly Google Drive backup is the only copy until then).
 2. Replace the placeholder address and TIN in `packages/core/src/config.ts`. Receipts say "THIS IS NOT AN OFFICIAL RECEIPT" until the system is registered with the BIR.
 3. Sign the Windows installer so SmartScreen doesn't warn on the first install of each PC (optional; updates work without it).
 4. If SGM Pocket needs to print to Bluetooth receipt printers, add an ESC/POS printing library (`receiptText()` in `packages/core/src/receipt.ts` is the starting point).

@@ -1,0 +1,47 @@
+# Backs up SGM's server data to Google Drive every night, whether or not SGM Desk or SGM Pocket is open.
+# Setup, what's kept and how to restore: "Server backups" in README.md. The work is in scripts/backup/backup.sh.
+name: Back up the database
+
+on:
+  schedule:
+    - cron: '0 15 * * *' # 11 PM in the Philippines. GitHub can start scheduled runs some minutes late.
+  workflow_dispatch: # The "Run workflow" button, to back up now.
+
+concurrency:
+  group: database-backup
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      # An empty database to prove each backup restores before it's uploaded.
+      check:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: check
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 17 tools and rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-client-17 rclone
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+
+      - name: Back up
+        run: bash scripts/backup/backup.sh
+        env:
+          SGM_BACKUP_DATABASE_URL: ${{ secrets.SGM_BACKUP_DATABASE_URL }}
+          CHECK_DATABASE_URL: postgresql://postgres:check@localhost:5432/postgres
+          RCLONE_CONFIG_GDRIVE_TYPE: drive
+          RCLONE_CONFIG_GDRIVE_SCOPE: drive.file
+          RCLONE_CONFIG_GDRIVE_TOKEN: ${{ secrets.GDRIVE_TOKEN }}
