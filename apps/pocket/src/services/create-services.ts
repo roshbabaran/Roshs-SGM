@@ -6,6 +6,7 @@
 import { appHeader, DemoApi, HttpApi, ObservableStore, setUuidGenerator } from '@sgm/core';
 import { createAppServices, once } from '@sgm/ui';
 import * as Application from 'expo-application';
+import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
 import * as Crypto from 'expo-crypto';
 import * as Print from 'expo-print';
@@ -55,6 +56,7 @@ export const createPocketServices = once(async () => {
       print: (html) => Print.printAsync({ html }),
       printDocument: (html) => Print.printAsync({ html }).then(() => 'opened' as const),
     },
+    copyText: (text) => Clipboard.setStringAsync(text).then(() => undefined),
     checkForUpdates: apkUpdates?.install,
     updates: apkUpdates,
     ocr: createPocketScanner(),

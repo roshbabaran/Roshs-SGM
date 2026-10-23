@@ -126,7 +126,7 @@ function start(): void {
 
   handle(IPC.updatesCheck, () => checkForUpdates());
   handle(IPC.updatesReady, () => updateReady());
-  handle(IPC.updatesInstall, () => installUpdate());
+  handle(IPC.updatesInstall, ([token]) => installUpdate(typeof token === 'string' && token.length < 2000 ? token : undefined));
 
   handle(IPC.backupsInfo, () => {
     requireBackupRights();

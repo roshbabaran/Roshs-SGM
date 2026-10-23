@@ -7,6 +7,7 @@
  *   POST /sync/push    { entries: OutboxEntry[] }   -> PushResult
  *   GET  /sync/pull?cursor=...                      -> PullResult
  *   GET  /app/status                                -> AppStatus (app-policy.ts)
+ *   POST /updates/login { username, pin, deviceId } -> UpdateSignIn (works on a version too old to sign in)
  *
  * Users & Devices (users.manage; only the owner may change the owner's and admins' accounts):
  *   POST /admin/users                { user: UserInput }      -> User
@@ -40,6 +41,12 @@ import type { Permission, Role } from './roles';
 export interface LoginResult {
   token: string;
   user: User;
+  expiresAt: ISODate;
+}
+
+/** A sign-in that only downloads the newest version of the app, for a while. */
+export interface UpdateSignIn {
+  token: string;
   expiresAt: ISODate;
 }
 
@@ -107,6 +114,8 @@ export interface ApiClient {
   pull(cursor: string | null, token: string): Promise<PullResult>;
   /** Whether the owner lets this version of the app run (sgm.app_policy). */
   appStatus(): Promise<AppStatus>;
+  /** Signs in only to download the newest version, when this one is too old to sign in (AppGate's Update now). */
+  updateLogin(username: string, pin: string, deviceId: string): Promise<UpdateSignIn>;
   /** Creates or changes an account. Needs a connection; returns the user record as every device will receive it. */
   saveUser(input: UserInput, token: string): Promise<User>;
   /** Every PC and phone that has signed in or was added. */
@@ -139,6 +148,10 @@ export class HttpApi implements ApiClient {
 
   appStatus(): Promise<AppStatus> {
     return this.request<AppStatus>('GET', '/app/status');
+  }
+
+  updateLogin(username: string, pin: string, deviceId: string): Promise<UpdateSignIn> {
+    return this.request<UpdateSignIn>('POST', '/updates/login', { username, pin, deviceId });
   }
 
   saveUser(input: UserInput, token: string): Promise<User> {

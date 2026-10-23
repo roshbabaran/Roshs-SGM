@@ -35,10 +35,14 @@ export function createApkUpdates(apiUrl: string) {
   const base = `${apiUrl.replace(/\/+$/, '')}/updates/android`;
   const installed = Number(Application.nativeBuildVersion ?? 0);
 
-  /** The newer APK on the server, or null when this phone is up to date or nobody is signed in. */
-  async function newer(): Promise<{ info: LatestApk; token: string } | null> {
-    const token = await signedInToken();
-    if (!token || Platform.OS !== 'android') return null;
+  /**
+   * The newer APK on the server, or null when this phone is up to date or isn't Android. `signIn` is a sign-in from
+   * /updates/login, for when nobody is signed in; without either, it rejects.
+   */
+  async function newer(signIn?: string): Promise<{ info: LatestApk; token: string } | null> {
+    if (Platform.OS !== 'android') return null;
+    const token = signIn ?? (await signedInToken());
+    if (!token) throw new Error('Sign in to download the update.');
     const response = await fetch(`${base}/latest.json`, { headers: { Authorization: `Bearer ${token}` } });
     if (response.status === 404) return null; // nothing released yet
     if (!response.ok) throw new Error((await response.text().catch(() => '')) || `Server error ${response.status}`);
@@ -55,8 +59,8 @@ export function createApkUpdates(apiUrl: string) {
       }
     },
 
-    async install(): Promise<string> {
-      const found = await newer();
+    async install(signIn?: string): Promise<string> {
+      const found = await newer(signIn);
       if (!found) return `SGM Pocket ${Application.nativeApplicationVersion ?? ''} is the latest version.`;
       const { info, token } = found;
       const apk = new File(Paths.cache, info.file.replace(/[^\w.-]/g, '_'));

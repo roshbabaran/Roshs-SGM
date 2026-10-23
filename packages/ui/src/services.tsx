@@ -95,14 +95,19 @@ export interface PlatformServices {
   api: ApiClient;
   secure: SecureStorage;
   printer: ReceiptPrinter;
+  /** Copies text, such as the Device ID, for pasting elsewhere. Missing where there is no clipboard. */
+  copyText?: (text: string) => Promise<void>;
   /** Checks for a new version of the app. Returns a message for the person. */
   checkForUpdates?: () => Promise<string>;
   /** Newer versions of the installed app (missing in development and the browser preview). */
   updates?: {
     /** Looks for a newer version; resolves its number once it can be installed, otherwise null. */
     available(): Promise<string | null>;
-    /** Installs it (SGM Desk restarts; SGM Pocket opens Android's installer). Resolves a message for the person. */
-    install(): Promise<string>;
+    /**
+     * Installs it (SGM Desk restarts; SGM Pocket opens Android's installer). Resolves a message for the person.
+     * Without `token`, a sign-in from api.updateLogin, it needs someone signed in.
+     */
+    install(token?: string): Promise<string>;
   };
   /** Copies of this device's data, weekly and on demand (SGM Desk only; needs backups.manage). */
   backups?: {

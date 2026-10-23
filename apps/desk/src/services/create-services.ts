@@ -54,8 +54,10 @@ async function electronPlatform(bridge: SgmBridge): Promise<PlatformServices> {
       print: (html, options) => bridge.printer.print(html, options),
       printDocument: (html) => bridge.printer.printDocument(html),
     },
+    // The main process lets the screens write to the clipboard, and nothing else.
+    copyText: (text) => navigator.clipboard.writeText(text),
     checkForUpdates: () => bridge.updates.check(),
-    updates: { available: () => bridge.updates.ready(), install: () => bridge.updates.install() },
+    updates: { available: () => bridge.updates.ready(), install: (token) => bridge.updates.install(token) },
     backups: bridge.backups,
     ocr: createDeskScanner(bridge),
   };

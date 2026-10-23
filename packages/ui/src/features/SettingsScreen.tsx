@@ -16,12 +16,13 @@ import { ScrollView, StyleSheet, Switch, View } from 'react-native';
 
 import { Banner, Card, ScreenHeader, SegmentedControl } from '../Basics';
 import { Button } from '../Button';
+import { DeviceIdField } from '../DeviceIdField';
 import { ConfirmDialog } from '../Dialog';
 import { Select } from '../Select';
 import { useServices, useSyncStatus, useWork, type AppServices, type BackupInfo, type PrinterInfo } from '../services';
 import { SyncStatusBadge } from '../SyncStatusBadge';
 import { Text } from '../Text';
-import { monoFont, spacing } from '../theme';
+import { spacing } from '../theme';
 import { useToast } from '../Toast';
 
 const SYSTEM_DIALOG = '__dialog__';
@@ -178,9 +179,7 @@ export function SettingsScreen() {
       <View style={styles.columns}>
         <Card title="This device" style={styles.card}>
           <Row label="Device ID">
-            <Text style={{ fontFamily: monoFont }} selectable>
-              {services.deviceId}
-            </Text>
+            <DeviceIdField />
           </Row>
           <Row label="Location">
             {canChange ? (

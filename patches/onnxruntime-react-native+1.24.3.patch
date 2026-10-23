@@ -34,6 +34,36 @@ index 41b4359..d13e98a 100644
      extractLibs "com.facebook.fbjni:fbjni:+:headers"
      extractLibs "com.facebook.fbjni:fbjni:+"
    }
+diff --git a/node_modules/onnxruntime-react-native/android/src/main/java/ai/onnxruntime/reactnative/OnnxruntimeModule.java b/node_modules/onnxruntime-react-native/android/src/main/java/ai/onnxruntime/reactnative/OnnxruntimeModule.java
+index c362e6a..e8496f4 100644
+--- a/node_modules/onnxruntime-react-native/android/src/main/java/ai/onnxruntime/reactnative/OnnxruntimeModule.java
++++ b/node_modules/onnxruntime-react-native/android/src/main/java/ai/onnxruntime/reactnative/OnnxruntimeModule.java
+@@ -33,10 +33,16 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule {
+ 
+   native void nativeCleanup();
+ 
++  // Set by install(), which loads the native library: nativeCleanup() doesn't exist before then, and calling it
++  // would crash the app whenever React Native shuts down without the receipt reader having been used.
++  private boolean installed = false;
++
+   @Override
+   public void invalidate() {
+     super.invalidate();
+-    nativeCleanup();
++    if (installed) {
++      nativeCleanup();
++    }
+   }
+ 
+   /**
+@@ -50,6 +56,7 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule {
+       CallInvokerHolderImpl jsCallInvokerHolder =
+         (CallInvokerHolderImpl) getReactApplicationContext().getCatalystInstance().getJSCallInvokerHolder();
+       nativeInstall(jsContext.get(), jsCallInvokerHolder);
++      installed = true;
+       return true;
+     } catch (Exception e) {
+       return false;
 diff --git a/node_modules/onnxruntime-react-native/unimodule.json b/node_modules/onnxruntime-react-native/unimodule.json
 deleted file mode 100644
 index c2bd3c0..0000000

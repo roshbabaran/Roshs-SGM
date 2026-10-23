@@ -83,12 +83,24 @@ The same functions (`sgm.reset_pin`, `sgm.set_user_active`, `sgm.approve_device`
 
 Run `supabase/upgrade-1.1.0.sql` once in the SQL Editor, then deploy the API as above. SGM 1.0 keeps working against the 1.1.0 API (it isn't sent Claims records, which it can't store), but it doesn't know the admin and branch manager roles (they can't sign in on it), doesn't count defective stock apart and sells a set that holds other sets with only its own items. So once the 1.1.0 installer and APK are released, raise the minimum version to 1.1.0 (the last lines of the upgrade file, and [Turning SGM off, or forcing an update](#turning-sgm-off-or-forcing-an-update)). SGM Pocket 1.1.0 is a new APK, not an `eas update`: its icon and version changed.
 
+#### Upgrading the server to 1.1.1
+
+Deploy the API as above; there is no SQL to run. 1.1.1 adds `POST /api/updates/login`, a sign-in that only lets a signed-out SGM Desk or SGM Pocket download an update (good for 30 minutes, even on a version too old to sign in). Versions before 1.1.1 can't use it, so release 1.1.1 and let devices update through the "Update" bar before raising the minimum version to 1.1.1.
+
 ## Releases and updates
 
 Both apps are released privately: each version is a release in the private GitHub repo `NathBajamunde/SGM-Releases`, and the SGM API hands the files only to signed-in people on approved devices (`/api/updates/...` in `supabase/functions/api/index.ts`, using the `GITHUB_RELEASES_REPO` and `GITHUB_RELEASES_TOKEN` secrets).
 
 - **SGM Desk:** raise `version` in `apps/desk/package.json`, run `npm run desk:dist`, then `npm run desk:release`. Installed copies download the update in the background and install it when SGM Desk closes, or straight away from the "Update" bar. The installer is one-click and per Windows user, so updates never ask for an administrator password.
-- **SGM Pocket, screens and logic:** from `apps/pocket`, `eas update --channel production --message "What changed"`. Phones pick it up on their next launches; no reinstall. These updates are tied to the app `version`, so they only reach phones whose APK has the same version; anything native must ship as a new APK instead (next point).
+- **SGM Pocket, screens and logic:** from `apps/pocket`, with the server address set the way `eas.json` sets it for builds (`eas update` doesn't read it from there; without it the update points Pocket at the demo server):
+
+  ```powershell
+  $env:EXPO_PUBLIC_API_URL = "https://<Project ID>.supabase.co/functions/v1/api"
+  npx expo export -p android --output-dir "$env:TEMP\sgm-update"
+  npx eas update --channel production --platform android --skip-bundler --input-dir "$env:TEMP\sgm-update" --message "What changed"
+  ```
+
+  Phones pick it up on their next launches; no reinstall. These updates are tied to the app `version`, so they only reach phones whose APK has the same version; anything native must ship as a new APK instead (next point). Never publish from a branch whose `version` or native packages differ from the installed APK's.
 - **SGM Pocket, native changes** (a new or upgraded package with native code, an Expo SDK upgrade, or `app.json` plugins, permissions, icon or splash): raise `version` and `android.versionCode` in `apps/pocket/app.json`, run `eas build -p android --profile production`, then `npm run pocket:release -- <the .apk>`. Phones show an "Update" bar; Android asks the person to confirm the install, and the app keeps its data.
 - **Signing key:** every APK must be signed with the same key (kept by EAS; download a copy with `eas credentials`). An APK signed with another key can't update the installed app.
 

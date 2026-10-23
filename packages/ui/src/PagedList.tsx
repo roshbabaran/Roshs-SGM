@@ -45,7 +45,14 @@ export function PagedList<T>({
   return (
     <View>
       {shown.map((item) => (
-        <View key={keyOf(item)} onLayout={(event) => setRowHeight((h) => Math.max(h, Math.ceil(event.nativeEvent.layout.height)))}>
+        <View
+          key={keyOf(item)}
+          onLayout={(event) => {
+            // Read the height now: on Android the event is emptied once this handler returns, before React runs the update.
+            const height = Math.ceil(event.nativeEvent.layout.height);
+            setRowHeight((h) => Math.max(h, height));
+          }}
+        >
           {renderItem(item)}
         </View>
       ))}

@@ -3,6 +3,9 @@ import { Redirect } from 'expo-router';
 import { Tabs } from 'expo-router/js-tabs';
 import type { ColorValue } from 'react-native';
 
+// A page that fails shows what went wrong, with Try again and Sign out, instead of closing the app.
+export { ScreenError as ErrorBoundary } from '@sgm/ui';
+
 const tabIcon =
   (name: IconName) =>
   ({ color, size }: { color: ColorValue; size: number }) => <Icon name={name} color={color} size={size} />;

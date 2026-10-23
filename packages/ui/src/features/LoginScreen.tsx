@@ -1,9 +1,10 @@
-import { DEMO_ACCOUNTS, loginFormSchema } from '@sgm/core';
+import { ApiError, DEMO_ACCOUNTS, loginFormSchema } from '@sgm/core';
 import { useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { Banner, Card } from '../Basics';
 import { Button } from '../Button';
+import { DeviceIdField } from '../DeviceIdField';
 import { Logo } from '../Logo';
 import { useServices } from '../services';
 import { Text } from '../Text';
@@ -16,17 +17,21 @@ export function LoginScreen() {
   const { colors } = useTheme();
   const form = useZodForm(loginFormSchema, { username: '', pin: '' });
   const [error, setError] = useState<string | null>(null);
+  // The server turned this device away until the owner or an admin approves it.
+  const [needsApproval, setNeedsApproval] = useState(false);
   const [busy, setBusy] = useState(false);
   const pinRef = useRef<TextInput>(null);
 
   const submit = form.handleSubmit(async ({ username, pin }) => {
     setBusy(true);
     setError(null);
+    setNeedsApproval(false);
     try {
       await session.login(username, pin);
     } catch (e) {
       // Without the server, the session explains who may still sign in offline.
       setError(e instanceof Error ? e.message : String(e));
+      setNeedsApproval(e instanceof ApiError && e.status === 403);
     } finally {
       setBusy(false);
     }
@@ -69,6 +74,14 @@ export function LoginScreen() {
             onSubmitEditing={submit}
           />
           {error ? <Banner tone="danger">{error}</Banner> : null}
+          {needsApproval ? (
+            <View style={styles.approval}>
+              <Text variant="small" muted>
+                Copy this Device ID and send it to the owner or an admin. They approve it in Users &amp; Devices.
+              </Text>
+              <DeviceIdField />
+            </View>
+          ) : null}
           <Button title="Sign in" size="lg" onPress={submit} loading={busy} fullWidth />
 
           {api.mode === 'demo' ? (
@@ -106,6 +119,7 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   card: { width: '100%', maxWidth: 400, gap: spacing.lg },
   brand: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  approval: { gap: spacing.sm },
   demo: { borderTopWidth: 1, paddingTop: spacing.md, gap: spacing.sm },
   demoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   chip: { borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: spacing.md, paddingVertical: 6, cursor: 'pointer' },

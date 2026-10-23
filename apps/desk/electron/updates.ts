@@ -36,9 +36,12 @@ export function startUpdates(options: { apiUrl: string; token: () => string | nu
   void quietCheck();
 }
 
-/** Asks the SGM API for a newer version and starts downloading it; null when nobody is signed in. */
-async function check(): Promise<UpdateCheckResult | null> {
-  const current = token();
+/**
+ * Asks the SGM API for a newer version and starts downloading it; null when nobody is signed in. `signIn` is a
+ * sign-in from /updates/login, for when nobody is.
+ */
+async function check(signIn?: string): Promise<UpdateCheckResult | null> {
+  const current = signIn ?? token();
   if (!current) return null;
   lastCheckAt = Date.now();
   // Lower case on purpose: electron-updater drops a header named exactly "authorization" when GitHub redirects
@@ -62,11 +65,11 @@ type Found =
   | { kind: 'downloading'; version: string }
   | { kind: 'ready'; version: string };
 
-async function lookForUpdate(): Promise<Found> {
+async function lookForUpdate(signIn?: string): Promise<Found> {
   if (!app.isPackaged) return { kind: 'off', message: 'Updates are only checked in the installed app.' };
   if (!updatesConfigured()) return { kind: 'off', message: 'Automatic updates are not set up yet.' };
   if (readyVersion) return { kind: 'ready', version: readyVersion };
-  const result = await check();
+  const result = await check(signIn);
   if (!result) return { kind: 'signed-out' };
   return result.isUpdateAvailable ? { kind: 'downloading', version: result.updateInfo.version } : { kind: 'latest' };
 }
@@ -97,9 +100,13 @@ export function updateReady(): string | null {
   return readyVersion;
 }
 
-/** Restarts on the downloaded version, or downloads it and then restarts. Returns a message for the person. */
-export async function installUpdate(): Promise<string> {
-  const found = await lookForUpdate();
+/**
+ * Restarts on the downloaded version, or downloads it and then restarts. Returns a message for the person. Rejects
+ * when nobody is signed in and there is no `signIn` from /updates/login, so the screens can ask for one.
+ */
+export async function installUpdate(signIn?: string): Promise<string> {
+  const found = await lookForUpdate(signIn);
+  if (found.kind === 'signed-out') throw new Error('Sign in to download the update.');
   if (found.kind === 'downloading') {
     installWhenReady = true;
     // The download may already have finished while the check was answering.

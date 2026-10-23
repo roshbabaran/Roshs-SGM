@@ -1,6 +1,9 @@
 import { useTheme } from '@sgm/ui';
 import { Stack } from 'expo-router';
 
+// A page that fails shows what went wrong, with Try again and Sign out, instead of closing the app.
+export { ScreenError as ErrorBoundary } from '@sgm/ui';
+
 // A page opened straight from elsewhere (Stock from the dashboard) still has the menu to go back to.
 export const unstable_settings = { initialRouteName: 'index' };
 

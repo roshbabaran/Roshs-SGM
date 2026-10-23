@@ -3,7 +3,7 @@
  * server exists. Nothing here should ship to the stores: replace DemoApi with
  * HttpApi (set EXPO_PUBLIC_API_URL) and load real products from the server.
  */
-import { ApiError, type ApiClient, type DeviceInput, type LoginResult, type PullResult, type PushResult, type UserInput } from './api';
+import { ApiError, type ApiClient, type DeviceInput, type LoginResult, type PullResult, type PushResult, type UpdateSignIn, type UserInput } from './api';
 import { APP_STATUS_OK, type AppStatus } from './app-policy';
 import { priceCart, saleMovements, type CartLine } from './cart';
 import { pricePerKg, defectiveCharge } from './claims';
@@ -551,6 +551,15 @@ export class DemoApi implements ApiClient {
 
   async appStatus(): Promise<AppStatus> {
     return APP_STATUS_OK;
+  }
+
+  async updateLogin(username: string, pin: string): Promise<UpdateSignIn> {
+    await this.roundTrip();
+    const account = this.accounts.find((a) => a.username === username.trim().toLowerCase() && a.pin === pin);
+    const user = account ? this.users.get(account.userId) : undefined;
+    if (!account || !user || !user.active) throw new ApiError('rejected', 'Wrong username or PIN.', 400);
+    const expiresAt = new Date(this.now().getTime() + 30 * 60_000);
+    return { token: `demo-update.${user.id}.${expiresAt.getTime()}`, expiresAt: expiresAt.toISOString() };
   }
 
   private async roundTrip(): Promise<void> {

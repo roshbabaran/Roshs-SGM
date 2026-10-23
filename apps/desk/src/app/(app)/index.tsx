@@ -3,6 +3,9 @@ import { Redirect, useRouter } from 'expo-router';
 
 import { PAGES } from '@/navigation';
 
+// A page that fails shows what went wrong, with Try again and Sign out, instead of closing the app.
+export { ScreenError as ErrorBoundary } from '@sgm/ui';
+
 /** The dashboard, or the first page this person may use (warehouse staff start on Inventory). */
 export default function Home() {
   const work = useWork();

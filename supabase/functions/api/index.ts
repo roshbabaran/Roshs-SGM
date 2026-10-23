@@ -10,6 +10,8 @@ const sql = postgres(Deno.env.get('SUPABASE_DB_URL')!, { prepare: false, max: 3 
 const secret = new TextEncoder().encode(Deno.env.get('SGM_JWT_SECRET'));
 const REQUIRE_DEVICE_APPROVAL = Deno.env.get('SGM_REQUIRE_DEVICE_APPROVAL') !== 'false';
 const TOKEN_HOURS = 72; // OFFLINE_GRACE_HOURS in packages/core/src/config.ts; the apps never refresh a token
+// A sign-in that only downloads an update, for an app too old to sign in properly (AppGate's Update now).
+const UPDATE_TOKEN_MINUTES = 30;
 const MAX_PER_PULL = 5000;
 const RELEASES_REPO = Deno.env.get('GITHUB_RELEASES_REPO') ?? '';
 const RELEASES_TOKEN = Deno.env.get('GITHUB_RELEASES_TOKEN') ?? '';
@@ -289,11 +291,15 @@ async function downloadLink(assetId: number): Promise<string> {
   return location;
 }
 
-/** The signed-in person, or null when the token is bad, the user is disabled or the device isn't approved. */
-async function authOf(header: string | undefined): Promise<Auth | null> {
+/**
+ * The signed-in person, or null when the token is bad, the user is disabled or the device isn't approved. A token
+ * from /updates/login only downloads updates.
+ */
+async function authOf(header: string | undefined, { forUpdates = false } = {}): Promise<Auth | null> {
   if (!header?.startsWith('Bearer ')) return null;
   try {
     const { payload } = await jwtVerify(header.slice(7), secret);
+    if (payload.use === 'updates' && !forUpdates) return null;
     const deviceId = String(payload.dev);
     const [row] = await sql`
       select r.doc, d.approved from sgm.records r
@@ -332,9 +338,13 @@ app.get('/health', async (c) => {
   return c.text('ok');
 });
 
-app.post('/auth/login', async (c) => {
+/**
+ * Checks a username and PIN from this device, counting wrong PINs, and notes the device so a new one shows in Users
+ * & Devices. The person, or the response to send: refusals are 400 or 403, not 401, because HttpApi turns every
+ * 401 into "Your sign-in has expired".
+ */
+async function signIn(c: Context): Promise<{ userId: string; user: Doc; deviceId: string } | Response> {
   const { username, pin, deviceId } = await c.req.json().catch(() => ({}));
-  // Answer refusals with 400, not 401: HttpApi turns every 401 into "Your sign-in has expired".
   if (typeof username !== 'string' || typeof pin !== 'string' || typeof deviceId !== 'string' || !deviceId) {
     return c.text('Enter your username and PIN.', 400);
   }
@@ -356,15 +366,29 @@ app.post('/auth/login', async (c) => {
   if (REQUIRE_DEVICE_APPROVAL && !device.approved) {
     return c.text(`This device is new. Ask the owner to approve it (Device ID ${deviceId}), then sign in again.`, 403);
   }
-  await sql`insert into sgm.device_users values (${deviceId}, ${login.user_id}) on conflict do nothing`;
+  return { userId: login.user_id, user: login.doc, deviceId };
+}
 
+const signToken = (claims: Record<string, string>, userId: string, expiresAt: Date) =>
+  new SignJWT(claims).setProtectedHeader({ alg: 'HS256' }).setSubject(userId).setExpirationTime(Math.floor(expiresAt.getTime() / 1000)).sign(secret);
+
+app.post('/auth/login', async (c) => {
+  const signedIn = await signIn(c);
+  if (signedIn instanceof Response) return signedIn;
+  await sql`insert into sgm.device_users values (${signedIn.deviceId}, ${signedIn.userId}) on conflict do nothing`;
   const expiresAt = new Date(Date.now() + TOKEN_HOURS * 3_600_000);
-  const token = await new SignJWT({ dev: deviceId })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setSubject(login.user_id)
-    .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
-    .sign(secret);
-  return c.json({ token, user: login.doc, expiresAt: expiresAt.toISOString() });
+  const token = await signToken({ dev: signedIn.deviceId }, signedIn.userId, expiresAt);
+  return c.json({ token, user: signedIn.user, expiresAt: expiresAt.toISOString() });
+});
+
+// Signing in only to download the newest version, from an app too old to sign in properly. It isn't held back by
+// sgm.app_policy, and its token is good for nothing but /updates, for half an hour.
+app.post('/updates/login', async (c) => {
+  const signedIn = await signIn(c);
+  if (signedIn instanceof Response) return signedIn;
+  const expiresAt = new Date(Date.now() + UPDATE_TOKEN_MINUTES * 60_000);
+  const token = await signToken({ dev: signedIn.deviceId, use: 'updates' }, signedIn.userId, expiresAt);
+  return c.json({ token, expiresAt: expiresAt.toISOString() });
 });
 
 app.post('/sync/push', async (c) => {
@@ -525,11 +549,11 @@ app.post('/admin/devices/remove', async (c) => {
 
 app.get('/app/status', async (c) => c.json(await appStatusOf(c.req.header('X-SGM-App'))));
 
-// App updates, only for signed-in people on approved devices. SGM Desk's updater reads latest.yml, then the
-// installer (and the previous version's .blockmap, to download only what changed); SGM Pocket reads latest.json,
-// then the APK. Large files are a redirect to GitHub, so they never pass through this function.
+// App updates, only for signed-in people on approved devices (a sign-in from /updates/login will do). SGM Desk's
+// updater reads latest.yml, then the installer (and the previous version's .blockmap, to download only what changed);
+// SGM Pocket reads latest.json, then the APK. Large files are a redirect to GitHub, so they never pass through here.
 app.get('/updates/:platform/:file', async (c) => {
-  const auth = await authOf(c.req.header('Authorization'));
+  const auth = await authOf(c.req.header('Authorization'), { forUpdates: true });
   if (!auth) return c.text('Sign in again.', 401);
   const { platform, file } = c.req.param();
   if (!Object.hasOwn(RELEASE_TAG, platform)) return c.text('There is no such app.', 404);

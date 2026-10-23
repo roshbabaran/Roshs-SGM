@@ -10,6 +10,7 @@ export * from './LineChart';
 export * from './Logo';
 export * from './PagedList';
 export * from './ReceiptPreview';
+export * from './ScreenError';
 export * from './Select';
 export * from './services';
 export * from './SidebarLayout';

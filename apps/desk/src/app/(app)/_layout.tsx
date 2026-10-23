@@ -18,6 +18,9 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { PAGES } from '@/navigation';
 
+// A page that fails shows what went wrong, with Try again and Sign out, instead of closing the app.
+export { ScreenError as ErrorBoundary } from '@sgm/ui';
+
 /** Every page after sign-in: the sidebar menu (only the pages this person may use) around the page. */
 export default function AppLayout() {
   const session = useSession();

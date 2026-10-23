@@ -45,8 +45,11 @@ export interface SgmBridge {
     check(): Promise<string>;
     /** The downloaded version waiting to install, or null. */
     ready(): Promise<string | null>;
-    /** Restarts on the downloaded version, or downloads it first. Resolves a message for the person. */
-    install(): Promise<string>;
+    /**
+     * Restarts on the downloaded version, or downloads it first. Resolves a message for the person. `token` is a
+     * sign-in from /updates/login, for when nobody is signed in.
+     */
+    install(token?: string): Promise<string>;
   };
   /** Weekly and on-demand copies of the local database. Only for the owner and admins (backups.manage). */
   backups: {

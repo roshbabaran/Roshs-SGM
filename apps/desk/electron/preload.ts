@@ -35,7 +35,7 @@ const bridge: SgmBridge = {
   updates: {
     check: () => invoke(IPC.updatesCheck),
     ready: () => invoke(IPC.updatesReady),
-    install: () => invoke(IPC.updatesInstall),
+    install: (token) => invoke(IPC.updatesInstall, token),
   },
   backups: {
     info: () => invoke(IPC.backupsInfo),
