@@ -1,3 +1,4 @@
+export * from './AgeChart';
 export * from './BarChart';
 export * from './Basics';
 export * from './Button';
@@ -5,6 +6,9 @@ export * from './DataTable';
 export * from './DateField';
 export * from './Dialog';
 export * from './Icon';
+export * from './LineChart';
+export * from './Logo';
+export * from './PagedList';
 export * from './ReceiptPreview';
 export * from './Select';
 export * from './services';
@@ -19,6 +23,9 @@ export * from './useKeyboardShortcuts';
 export * from './useZodForm';
 
 export * from './features/BorrowingScreen';
+export * from './features/ClaimsScreen';
+export * from './features/CustomerPicker';
+export * from './features/DiscountDialog';
 export * from './features/DashboardScreen';
 export * from './features/InventoryScreen';
 export * from './features/LoginScreen';

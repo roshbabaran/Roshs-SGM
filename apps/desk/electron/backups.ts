@@ -1,6 +1,6 @@
 /**
  * Copies of SGM Desk's local database: one every week on its own, and more
- * whenever the owner (or someone given backups.manage) presses "Back up now".
+ * whenever the owner or an admin presses "Back up now".
  * They go into the Backups folder in this Windows account's app data, which
  * other Windows accounts on the PC can't open. The newest 12 are kept.
  *

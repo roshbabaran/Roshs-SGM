@@ -26,7 +26,12 @@ const devServerUrl = !app.isPackaged ? (process.env.SGM_DEV_SERVER_URL ?? null) 
 const apiUrl = process.env.EXPO_PUBLIC_API_URL ?? '';
 
 registerAppScheme();
-if (devServerUrl) app.setPath('userData', path.join(app.getPath('appData'), 'SGM Desk (dev)'));
+if (devServerUrl) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'SGM Desk (dev)'));
+  // The dev server's screens need 'unsafe-eval' for live reloading, which makes Electron warn about the
+  // Content-Security-Policy on every start. The installed app loads app://sgm/ with a strict policy instead.
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
+}
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -50,10 +55,15 @@ function start(): void {
   const dataDir = app.getPath('userData');
   const db = openLocalDb(path.join(dataDir, 'sgm.db'));
   const secure = createSecureStore(path.join(dataDir, 'secure.json'));
+  // Closing SGM Desk signs the person out. A window closed with X signs out as the app quits; after a crash or
+  // End task in Task Manager nothing runs on the way out, so every start signs out too. Sales waiting to sync
+  // stay in the offline database and are sent after the next sign-in.
+  secure.removeItem(SESSION_KEY);
   const deviceId = loadDeviceId(path.join(dataDir, 'device.json'));
   const ocr = createOcrReader();
   const backups = createBackups(path.join(dataDir, 'Backups'), db);
   app.on('will-quit', () => {
+    secure.removeItem(SESSION_KEY);
     db.close();
     ocr.close();
   });
@@ -107,7 +117,7 @@ function start(): void {
       return null;
     }
   };
-  /** Backups hold every sale and loan, so only the owner and people given backups.manage may make or open them. */
+  /** Backups hold every sale and loan, so only the owner and admins may make or open them (backups.manage). */
   const requireBackupRights = () => {
     const session = currentSession();
     const user = session ? ((db.get('users', session.user.id) as User | null) ?? session.user) : null;
@@ -149,6 +159,7 @@ function createWindow(): void {
     minHeight: 640,
     show: false,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0E1116' : '#F4F5F7',
+    icon: path.join(__dirname, 'icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

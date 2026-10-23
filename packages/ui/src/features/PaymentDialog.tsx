@@ -1,16 +1,17 @@
-import { formatPeso, PAYMENT_LABELS, PAYMENT_METHODS, parsePeso, paymentFormSchema, type Centavos, type Payment } from '@sgm/core';
+import { addDays, formatPeso, localDay, PAYMENT_LABELS, PAYMENT_METHODS, parsePeso, paymentFormSchema, type Centavos, type Payment, type PaymentMethod } from '@sgm/core';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Banner, SegmentedControl } from '../Basics';
 import { Button } from '../Button';
+import { DateField } from '../DateField';
 import { Dialog } from '../Dialog';
 import { Text } from '../Text';
 import { TextField } from '../TextField';
 import { radius, spacing, useTheme } from '../theme';
 import { useZodForm } from '../useZodForm';
 
-const EMPTY = { method: 'cash' as const, tendered: '', reference: '' };
+const EMPTY = { method: 'cash' as const, tendered: '', reference: '', chequeNo: '', bank: '', cashOn: '' };
 
 /** Suggested cash amounts: exact, then the next ₱100, ₱500 and ₱1,000. */
 function quickAmounts(total: Centavos): Centavos[] {
@@ -26,6 +27,7 @@ export function PaymentDialog({
   title = 'Payment',
   confirmLabel = 'Complete sale',
   cancelLabel = 'Back to sale',
+  allowCheque = false,
 }: {
   visible: boolean;
   total: Centavos;
@@ -35,6 +37,8 @@ export function PaymentDialog({
   title?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /** Borrowing payments can also be made with a post-dated cheque. */
+  allowCheque?: boolean;
 }) {
   const { colors } = useTheme();
   const schema = useMemo(() => paymentFormSchema(total), [total]);
@@ -45,7 +49,7 @@ export function PaymentDialog({
 
   useEffect(() => {
     if (visible) {
-      reset(EMPTY);
+      reset({ ...EMPTY, cashOn: addDays(localDay(new Date()), 30) });
       setError(null);
     }
   }, [visible, reset]);
@@ -88,7 +92,10 @@ export function PaymentDialog({
 
       <SegmentedControl
         accessibilityLabel="Payment method"
-        options={PAYMENT_METHODS.map((m) => ({ label: PAYMENT_LABELS[m], value: m }))}
+        options={[...PAYMENT_METHODS, ...(allowCheque ? (['cheque'] as const) : [])].map((m: Exclude<PaymentMethod, 'credit'>) => ({
+          label: m === 'cheque' ? 'Cheque' : PAYMENT_LABELS[m],
+          value: m,
+        }))}
         value={form.values.method}
         onChange={(method) => form.set('method', method)}
       />
@@ -125,6 +132,21 @@ export function PaymentDialog({
               {change === null ? '—' : formatPeso(change)}
             </Text>
           </View>
+        </>
+      ) : form.values.method === 'cheque' ? (
+        <>
+          <Text variant="small" muted>
+            A post-dated cheque counts as paid now. The owner, an admin or the branch manager marks it cleared or bounced once it is deposited.
+          </Text>
+          <TextField
+            label="Cheque number"
+            value={form.values.chequeNo ?? ''}
+            onChangeText={(v) => form.set('chequeNo', v)}
+            error={form.errors.chequeNo}
+            autoFocus
+          />
+          <TextField label="Bank" value={form.values.bank ?? ''} onChangeText={(v) => form.set('bank', v)} error={form.errors.bank} />
+          <DateField label="Can be cashed on" value={form.values.cashOn ?? ''} onChange={(day) => form.set('cashOn', day)} error={form.errors.cashOn} />
         </>
       ) : (
         <TextField

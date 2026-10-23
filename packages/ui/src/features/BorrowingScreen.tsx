@@ -1,7 +1,10 @@
 import {
   borrowerAccounts,
+  borrowersOnly,
+  cheques,
   cylinderReturnFormSchema,
   daysAgo,
+  downPaymentSchema,
   formatDateTime,
   formatDay,
   formatPeso,
@@ -14,17 +17,27 @@ import {
   localDay,
   NEW_BORROWER,
   PAYMENT_LABELS,
+  PAYMENT_METHODS,
   payLoan,
+  priceCart,
   returnCylinder,
   saveBorrower,
+  sellOnCredit,
+  settleCheque,
   stockByProduct,
+  worksAt,
   type Borrower,
   type BorrowerAccount,
+  type CartLine,
   type Centavos,
+  type ChequeInfo,
+  type Customer,
+  type CustomerRef,
   type LendInput,
   type LoanEntry,
   type Payment,
   type Product,
+  type ProductSet,
   type Sale,
   type StockMovement,
   type User,
@@ -39,6 +52,7 @@ import { DataTable, type Column } from '../DataTable';
 import { Dialog } from '../Dialog';
 import { Select } from '../Select';
 import { useCollection, useWork } from '../services';
+import { CustomerField, CustomerPickerDialog } from './CustomerPicker';
 import { Text } from '../Text';
 import { TextField } from '../TextField';
 import { radius, spacing, useTheme } from '../theme';
@@ -62,13 +76,20 @@ function signedPeso(amount: Centavos): string {
   return amount === 0 ? '' : `${amount > 0 ? '+' : '−'}${formatPeso(Math.abs(amount))}`;
 }
 
+const chequeText = (entry: LoanEntry) => {
+  const cheque = entry.payment?.cheque;
+  return cheque ? `${cheque.bank} cheque no. ${cheque.number}, cash on ${formatDay(cheque.cashOn)}` : '';
+};
+
 /** Lookups shared by the screen and its dialogs. */
 function useBorrowingData() {
-  const { data: borrowers } = useCollection<Borrower>('borrowers');
+  const { data: customers } = useCollection<Customer>('borrowers');
   const { data: loans } = useCollection<LoanEntry>('loans');
   const { data: products } = useCollection<Product>('products');
   const { data: sales } = useCollection<Sale>('sales');
   const { data: users } = useCollection<User>('users');
+  // Customers are named on any sale; the Borrowing window lists only those who have borrowed.
+  const borrowers = useMemo(() => borrowersOnly(customers, loans), [customers, loans]);
   const accounts = useMemo(() => borrowerAccounts(borrowers, loans), [borrowers, loans]);
   const productsById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   const salesById = useMemo(() => new Map(sales.map((s) => [s.id, s])), [sales]);
@@ -84,7 +105,11 @@ function useBorrowingData() {
         return sale ? `${sale.receiptNo} · ${sale.lines.map((l) => `${l.qty} × ${l.name}`).join(', ')}` : '';
       }
       case 'payment':
+        if (entry.payment?.method === 'cheque') return chequeText(entry);
         return entry.payment ? `${PAYMENT_LABELS[entry.payment.method]}${entry.payment.reference ? ` · ${entry.payment.reference}` : ''}` : '';
+      case 'cheque_cleared':
+      case 'cheque_bounced':
+        return entry.note ?? '';
       case 'void':
         return [cylinders, entry.note].filter(Boolean).join(' · ');
       default:
@@ -93,15 +118,26 @@ function useBorrowingData() {
   };
   const userName = (id: string) => users.find((u) => u.id === id)?.displayName ?? id;
 
-  return { borrowers, loans, accounts, products, productsById, salesById, productName, cylindersText, details, userName };
+  return { customers, borrowers, loans, accounts, products, productsById, salesById, productName, cylindersText, details, userName };
 }
 
-/** Refills on credit, cylinders lent with a refill, returns and payments. */
-export function BorrowingScreen() {
+type Show = 'open' | 'all' | 'cheques' | 'history';
+
+const CHEQUE_STATE: Record<ChequeInfo['state'], { label: string; tone: 'info' | 'success' | 'danger' }> = {
+  waiting: { label: 'Not yet deposited', tone: 'info' },
+  cleared: { label: 'Cleared', tone: 'success' },
+  bounced: { label: 'Bounced', tone: 'danger' },
+};
+
+/** Anything sold on credit, cylinders lent with a refill, returns, payments and post-dated cheques. */
+export function BorrowingScreen({ initialShow = 'open' }: { initialShow?: Show } = {}) {
+  const work = useWork();
   const data = useBorrowingData();
   const { accounts } = data;
-  const [show, setShow] = useState<'open' | 'all' | 'history'>('open');
-  const [lending, setLending] = useState<LendInput['kind'] | null>(null);
+  const [show, setShow] = useState<Show>(initialShow);
+  const [lending, setLending] = useState(false);
+  const [crediting, setCrediting] = useState(false);
+  const [settling, setSettling] = useState<ChequeInfo | null>(null);
   const [returning, setReturning] = useState<string | null>(null);
   const [paying, setPaying] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
@@ -116,6 +152,32 @@ export function BorrowingScreen() {
   const oldest = open.find((a) => a.openSince);
   const viewed = accounts.find((a) => a.borrower.id === viewing) ?? null;
   const ANY = '';
+  const today = localDay(new Date());
+  const allCheques = cheques(data.loans);
+  const chequesDue = allCheques.filter((c) => c.state === 'waiting' && c.cheque.cashOn <= today);
+  const canSettle = work.can('cheques.manage');
+
+  useEffect(() => setShow(initialShow), [initialShow]);
+
+  const chequeColumns: Column<ChequeInfo>[] = [
+    { key: 'cashOn', title: 'Cash on', width: 130, text: (c) => formatDay(c.cheque.cashOn), sortValue: (c) => c.cheque.cashOn },
+    { key: 'name', title: 'From', flex: 1.2, text: (c) => c.entry.borrowerName },
+    { key: 'cheque', title: 'Cheque', flex: 1.4, text: (c) => `${c.cheque.bank} no. ${c.cheque.number}` },
+    { key: 'amount', title: 'Amount', width: 120, align: 'right', text: (c) => formatPeso(c.amount), sortValue: (c) => c.amount },
+    { key: 'received', title: 'Received', width: 170, text: (c) => formatDateTime(c.entry.occurredAt), sortValue: (c) => c.entry.occurredAt },
+    {
+      key: 'state',
+      title: 'Status',
+      width: 170,
+      sortValue: (c) => (c.state === 'waiting' ? (c.cheque.cashOn <= today ? 0 : 1) : 2),
+      render: (c) =>
+        c.state === 'waiting' && c.cheque.cashOn <= today ? (
+          <Badge label="Can be cashed now" tone="warning" icon="alert-circle-outline" />
+        ) : (
+          <Badge label={CHEQUE_STATE[c.state].label} tone={CHEQUE_STATE[c.state].tone} />
+        ),
+    },
+  ];
 
   const accountColumns: Column<BorrowerAccount>[] = [
     {
@@ -177,11 +239,11 @@ export function BorrowingScreen() {
     <ScrollView contentContainerStyle={styles.root}>
       <ScreenHeader
         title="Borrowing"
-        subtitle="Refills on credit, borrowed cylinders, returns and payments at every branch."
+        subtitle="Sales on credit, borrowed cylinders, returns, payments and post-dated cheques at every branch."
         actions={
           <>
-            <Button title="Refill on credit" icon="time-outline" onPress={() => setLending('credit')} />
-            <Button title="Lend cylinder" icon="arrow-up-circle-outline" onPress={() => setLending('cylinder')} />
+            <Button title="Sales on credit" icon="time-outline" onPress={() => setCrediting(true)} />
+            <Button title="Lend cylinder" icon="arrow-up-circle-outline" onPress={() => setLending(true)} />
             <Button title="Return cylinder" icon="arrow-down-circle-outline" variant="secondary" onPress={() => setReturning(ANY)} />
             <Button title="Record payment" icon="wallet-outline" variant="secondary" onPress={() => setPaying(ANY)} />
           </>
@@ -202,6 +264,15 @@ export function BorrowingScreen() {
           icon="hourglass-outline"
           tone={oldest?.openSince && daysAgo(oldest.openSince) > 30 ? 'warning' : 'neutral'}
         />
+        {allCheques.some((c) => c.state === 'waiting') ? (
+          <StatTile
+            label="Post-dated cheques"
+            value={formatPeso(allCheques.filter((c) => c.state === 'waiting').reduce((sum, c) => sum + c.amount, 0))}
+            hint={chequesDue.length > 0 ? `${chequesDue.length} can be cashed now` : 'None can be cashed yet'}
+            icon="document-text-outline"
+            tone={chequesDue.length > 0 ? 'warning' : 'neutral'}
+          />
+        ) : null}
       </View>
       <Card padded>
         <SegmentedControl
@@ -209,12 +280,31 @@ export function BorrowingScreen() {
           options={[
             { label: `Open (${open.length})`, value: 'open' },
             { label: `All (${accounts.length})`, value: 'all' },
+            { label: `Cheques (${allCheques.length})`, value: 'cheques' },
             { label: 'History', value: 'history' },
           ]}
           value={show}
           onChange={setShow}
         />
-        {show === 'history' ? (
+        {show === 'cheques' ? (
+          <>
+            <DataTable
+              rows={allCheques}
+              columns={chequeColumns}
+              rowKey={(c) => c.entry.id}
+              onRowPress={canSettle ? (c) => c.state === 'waiting' && worksAt(work.user, c.entry.locationId) && setSettling(c) : undefined}
+              searchPlaceholder="Search cheques"
+              emptyText="No post-dated cheques yet. Take one with Record payment."
+              initialSort={{ key: 'state', direction: 'asc' }}
+              minWidth={900}
+            />
+            <Text variant="small" muted>
+              {canSettle
+                ? 'A cheque counts as paid when it is taken. Click a cheque once it is deposited to mark it cleared, or bounced: a bounced cheque is owed again.'
+                : 'A cheque counts as paid when it is taken. The owner, an admin or the branch manager marks it cleared or bounced once it is deposited.'}
+            </Text>
+          </>
+        ) : show === 'history' ? (
           <DataTable
             rows={history}
             columns={historyColumns}
@@ -237,13 +327,22 @@ export function BorrowingScreen() {
       </Card>
 
       <LendDialog
-        kind={lending}
-        onClose={() => setLending(null)}
+        visible={lending}
+        onClose={() => setLending(false)}
         onDone={(sale) => {
-          setLending(null);
+          setLending(false);
           setReceipt(sale);
         }}
       />
+      <CreditDialog
+        visible={crediting}
+        onClose={() => setCrediting(false)}
+        onDone={(sale) => {
+          setCrediting(false);
+          setReceipt(sale);
+        }}
+      />
+      <SettleChequeDialog cheque={settling} onClose={() => setSettling(null)} />
       <ReturnDialog borrowerId={returning} onClose={() => setReturning(null)} />
       <PayDialog borrowerId={paying} onClose={() => setPaying(null)} />
       <AccountDialog
@@ -270,21 +369,41 @@ export function BorrowingScreen() {
 
 type LendForm = z.input<typeof lendFormSchema>;
 
-const blankLend = (kind: LendInput['kind'] | null): LendForm => ({
+const blankLend = (): LendForm => ({
   borrowerId: '',
   newName: '',
   newPhone: '',
   productId: '',
   qty: '1',
-  paidNow: kind === 'cylinder',
+  paidNow: true,
 });
 
-function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null; onClose: () => void; onDone: (sale: Sale) => void }) {
+/** Everyone who can borrow: customers on the list, with what they owe and have out. */
+function borrowerOptions(customers: Customer[], accounts: BorrowerAccount[], cylindersText: (a: BorrowerAccount) => string) {
+  return [
+    { label: 'New customer…', value: NEW_BORROWER, hint: 'Add someone who is not on the list yet' },
+    ...[...customers]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((c) => {
+        const a = accounts.find((x) => x.borrower.id === c.id);
+        return {
+          label: c.name,
+          value: c.id,
+          hint:
+            [a && a.owed > 0 ? `owes ${formatPeso(a.owed)}` : '', a && a.cylindersOut > 0 ? `has ${cylindersText(a)}` : '', c.phone ?? '']
+              .filter(Boolean)
+              .join(' · ') || undefined,
+        };
+      }),
+  ];
+}
+
+function LendDialog({ visible, onClose, onDone }: { visible: boolean; onClose: () => void; onDone: (sale: Sale) => void }) {
   const work = useWork();
   const { colors } = useTheme();
-  const { accounts, products, cylindersText } = useBorrowingData();
+  const { customers, accounts, products, cylindersText } = useBorrowingData();
   const { data: movements } = useCollection<StockMovement>('movements');
-  const form = useZodForm(lendFormSchema, blankLend(kind));
+  const form = useZodForm(lendFormSchema, blankLend());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [payment, setPayment] = useState<{ input: LendInput; total: Centavos } | null>(null);
@@ -292,19 +411,19 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
 
   useEffect(() => {
     setPayment(null);
-    if (kind) {
-      reset(blankLend(kind));
+    if (visible) {
+      reset(blankLend());
       setError(null);
     }
-  }, [kind, reset]);
+  }, [visible, reset]);
 
   const v = form.values;
   const levels = stockByProduct(movements, work.locationId);
   const product = products.find((p) => p.id === v.productId);
   const qty = parseInt(v.qty, 10) || 0;
-  const total = product && kind ? lendLine(kind, product, qty).total : 0;
-  const account = accounts.find((a) => a.borrower.id === v.borrowerId);
-  const who = v.borrowerId === NEW_BORROWER ? v.newName.trim() || 'the new borrower' : (account?.borrower.name ?? 'the borrower');
+  const customer = customers.find((c) => c.id === v.borrowerId);
+  const total = product ? lendLine(product, qty, customer).total : 0;
+  const who = v.borrowerId === NEW_BORROWER ? v.newName.trim() || 'the new borrower' : (customer?.name ?? 'the borrower');
   const Who = who.charAt(0).toUpperCase() + who.slice(1);
 
   const record = async (input: LendInput) => {
@@ -314,15 +433,13 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
   };
 
   const submit = form.handleSubmit(async (values) => {
-    if (!kind) return;
     const input: LendInput = {
-      kind,
       borrower: values.borrowerId === NEW_BORROWER ? { name: values.newName, phone: values.newPhone } : { id: values.borrowerId, name: '' },
       productId: values.productId,
       qty: values.qty,
       payment: null,
     };
-    if (kind === 'cylinder' && values.paidNow) {
+    if (values.paidNow) {
       setPayment({ input, total });
       return;
     }
@@ -337,18 +454,6 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
     }
   });
 
-  const borrowerOptions = [
-    { label: 'New borrower…', value: NEW_BORROWER, hint: 'Add someone who is not on the list yet' },
-    ...[...accounts]
-      .sort((a, b) => a.borrower.name.localeCompare(b.borrower.name))
-      .map((a) => ({
-        label: a.borrower.name,
-        value: a.borrower.id,
-        hint: [a.owed > 0 ? `owes ${formatPeso(a.owed)}` : '', a.cylindersOut > 0 ? `has ${cylindersText(a)}` : '', a.borrower.phone ?? '']
-          .filter(Boolean)
-          .join(' · ') || undefined,
-      })),
-  ];
   const cylinderOptions = products
     .filter((p) => p.active && p.kind === 'cylinder')
     .map((p) => ({
@@ -357,20 +462,17 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
       hint: `${levelOf(levels, p.id).full} full here · refill ${formatPeso(p.refillPrice ?? p.price)}`,
     }));
 
-  const title = kind === 'cylinder' ? 'Lend a cylinder' : 'Refill on credit';
   const cylinders = product ? `${qty} full ${product.name} ${qty === 1 ? 'cylinder' : 'cylinders'}` : '';
   const summary =
     !product || qty < 1
       ? 'Choose who is borrowing, the cylinder and how many.'
-      : kind === 'cylinder'
-        ? `${Who} takes ${cylinders} without giving an empty, and brings ${qty === 1 ? 'it' : 'them'} back later. The refill is ${formatPeso(total)}, ${v.paidNow ? 'paid now' : `added to what ${who} owes`}.`
-        : `${Who} swaps ${qty} empty for ${cylinders} now and pays ${formatPeso(total)} later. It is recorded as borrowed today, ${formatDay(localDay(new Date()))}.`;
+      : `${Who} takes ${cylinders} without giving an empty, and brings ${qty === 1 ? 'it' : 'them'} back later. The refill is ${formatPeso(total)}, ${v.paidNow ? 'paid now' : `added to what ${who} owes`}.`;
 
   return (
     <>
       <Dialog
-        visible={!!kind && !payment}
-        title={title}
+        visible={visible && !payment}
+        title="Lend a cylinder"
         onClose={onClose}
         dismissable={!busy}
         width={560}
@@ -378,7 +480,7 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
           <>
             <Button title="Cancel" variant="secondary" onPress={onClose} disabled={busy} />
             <Button
-              title={kind === 'credit' ? 'Put on account' : v.paidNow ? 'Continue to payment' : 'Lend cylinder'}
+              title={v.paidNow ? 'Continue to payment' : 'Lend cylinder'}
               icon="checkmark"
               onPress={submit}
               loading={busy}
@@ -389,7 +491,7 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
         <Select
           label="Borrower"
           value={v.borrowerId}
-          options={borrowerOptions}
+          options={borrowerOptions(customers, accounts, cylindersText)}
           onChange={(id) => form.set('borrowerId', id)}
           error={form.errors.borrowerId}
           placeholder="Choose who is borrowing…"
@@ -433,19 +535,17 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
             containerStyle={styles.qty}
           />
         </View>
-        {kind === 'cylinder' ? (
-          <View style={styles.field}>
-            <Text variant="label">The refill</Text>
-            <SegmentedControl
-              options={[
-                { label: 'Paid now', value: 'now' },
-                { label: 'Put on their account', value: 'later' },
-              ]}
-              value={v.paidNow ? 'now' : 'later'}
-              onChange={(value) => form.set('paidNow', value === 'now')}
-            />
-          </View>
-        ) : null}
+        <View style={styles.field}>
+          <Text variant="label">The refill</Text>
+          <SegmentedControl
+            options={[
+              { label: 'Paid now', value: 'now' },
+              { label: 'Put on their account', value: 'later' },
+            ]}
+            value={v.paidNow ? 'now' : 'later'}
+            onChange={(value) => form.set('paidNow', value === 'now')}
+          />
+        </View>
         <View style={[styles.summary, { backgroundColor: colors.primarySoft }]}>
           <Text>{summary}</Text>
         </View>
@@ -463,6 +563,261 @@ function LendDialog({ kind, onClose, onDone }: { kind: LendInput['kind'] | null;
         }}
       />
     </>
+  );
+}
+
+interface CreditRow {
+  /** A product id, or "set:<id>". */
+  pick: string;
+  type: 'refill' | 'new' | 'item';
+  qty: string;
+}
+
+const blankRow = (): CreditRow => ({ pick: '', type: 'refill', qty: '1' });
+
+const NOTHING_PAID = { amount: '', method: 'cash' as const, reference: '' };
+
+/**
+ * Sales on credit: anything in the store on the customer's account, refills,
+ * new cylinders, accessories or sets. They can pay part of it now; later
+ * payments go through Record payment.
+ */
+function CreditDialog({ visible, onClose, onDone }: { visible: boolean; onClose: () => void; onDone: (sale: Sale) => void }) {
+  const work = useWork();
+  const { colors } = useTheme();
+  const { customers, products, productsById } = useBorrowingData();
+  const { data: sets } = useCollection<ProductSet>('sets');
+  const [customer, setCustomer] = useState<CustomerRef | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [rows, setRows] = useState<CreditRow[]>([blankRow()]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const setsById = new Map(sets.map((s) => [s.id, s]));
+  const toLine = (row: CreditRow): CartLine | null => {
+    const qty = parseInt(row.qty, 10);
+    if (!row.pick || !(qty > 0)) return null;
+    if (row.pick.startsWith('set:')) return setsById.has(row.pick.slice(4)) ? { type: 'set', setId: row.pick.slice(4), qty } : null;
+    const product = productsById.get(row.pick);
+    if (!product) return null;
+    return { type: product.kind === 'accessory' ? 'item' : row.type === 'new' ? 'new' : 'refill', productId: product.id, qty };
+  };
+  const rowLines = rows.map(toLine);
+  const cart = rowLines.filter((line): line is CartLine => line !== null);
+  const record = customer?.id ? customers.find((c) => c.id === customer.id) : null;
+  const { lines, total } = priceCart(cart, productsById, setsById, record);
+  /** The priced line for a row, if the row is complete. */
+  const lineFor = (index: number) => (rowLines[index] ? lines[rowLines.slice(0, index).filter(Boolean).length] : undefined);
+  const change = (index: number, patch: Partial<CreditRow>) => setRows(rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+
+  const paySchema = useMemo(() => downPaymentSchema(total), [total]);
+  const pay = useZodForm(paySchema, NOTHING_PAID);
+  const { reset: resetPay } = pay;
+  const checked = paySchema.safeParse(pay.values);
+  const paidNow = checked.success ? checked.data : null;
+  const later = total - (paidNow?.amount ?? 0);
+
+  useEffect(() => {
+    if (visible) {
+      setCustomer(null);
+      setRows([blankRow()]);
+      resetPay(NOTHING_PAID);
+      setError(null);
+    }
+  }, [visible, resetPay]);
+
+  const options = [
+    ...products.filter((p) => p.active).map((p) => ({
+      label: p.name,
+      value: p.id,
+      hint: p.kind === 'cylinder' ? `Refill ${formatPeso(p.refillPrice ?? p.price)} · New ${formatPeso(p.price)}` : formatPeso(p.price),
+    })),
+    ...sets.filter((s) => s.active).map((s) => ({ label: `${s.name} (set)`, value: `set:${s.id}`, hint: formatPeso(s.price) })),
+  ];
+
+  const submit = pay.handleSubmit(async (downPayment) => {
+    if (!customer) return setError('Choose who is buying on credit.');
+    if (cart.length === 0) return setError('Add what they are taking.');
+    setBusy(true);
+    setError(null);
+    try {
+      onDone(await sellOnCredit(work.ctx, { borrower: customer, cart, downPayment }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  return (
+    <>
+      <Dialog
+        visible={visible && !choosing}
+        title="Sales on credit"
+        onClose={onClose}
+        dismissable={!busy}
+        width={640}
+        actions={
+          <>
+            <Button title="Cancel" variant="secondary" onPress={onClose} disabled={busy} />
+            <Button title={`Put ${formatPeso(later)} on account`} icon="checkmark" onPress={submit} loading={busy} disabled={cart.length === 0} />
+          </>
+        }
+      >
+        <CustomerField customer={customer} onChoose={() => setChoosing(true)} required />
+        <View style={styles.field}>
+          <Text variant="label">What they take</Text>
+          {rows.map((row, index) => {
+            const product = productsById.get(row.pick);
+            const line = lineFor(index);
+            return (
+              <View key={index} style={[styles.itemRow, { borderColor: colors.border }]}>
+                <View style={styles.half}>
+                  <Select value={row.pick} options={options} placeholder="Choose a product or set…" onChange={(pick) => change(index, { pick })} />
+                </View>
+                {product?.kind === 'cylinder' ? (
+                  <SegmentedControl
+                    size="sm"
+                    accessibilityLabel="Refill or new"
+                    options={[
+                      { label: 'Refill', value: 'refill' },
+                      { label: 'New', value: 'new' },
+                    ]}
+                    value={row.type === 'new' ? 'new' : 'refill'}
+                    onChange={(type) => change(index, { type })}
+                  />
+                ) : null}
+                <TextField
+                  value={row.qty}
+                  onChangeText={(qty) => change(index, { qty: qty.replace(/\D/g, '') })}
+                  keyboardType="number-pad"
+                  accessibilityLabel="Quantity"
+                  containerStyle={styles.smallQty}
+                />
+                <Button title="Remove" variant="ghost" size="sm" onPress={() => setRows(rows.filter((_, i) => i !== index))} disabled={rows.length === 1} />
+                {line ? (
+                  <Text variant="small" muted numeric style={styles.full}>
+                    {`${formatPeso(line.amount)}${line.regularPrice !== undefined ? ` (their price; regular ${formatPeso(line.regularPrice * line.qty)})` : ''}`}
+                  </Text>
+                ) : null}
+              </View>
+            );
+          })}
+          <View style={styles.addRow}>
+            <Button title="Add another" icon="add" variant="secondary" size="sm" onPress={() => setRows([...rows, blankRow()])} />
+          </View>
+        </View>
+        <View style={styles.field}>
+          <Text variant="label">Paid now (optional)</Text>
+          <View style={styles.pair}>
+            <TextField
+              prefix="₱"
+              placeholder="0.00"
+              value={pay.values.amount}
+              onChangeText={(amount) => pay.set('amount', amount)}
+              error={pay.errors.amount}
+              keyboardType="decimal-pad"
+              accessibilityLabel="Amount paid now"
+              containerStyle={styles.half}
+            />
+            {pay.values.amount ? (
+              <SegmentedControl
+                accessibilityLabel="Paid with"
+                options={PAYMENT_METHODS.map((method) => ({ label: PAYMENT_LABELS[method], value: method }))}
+                value={pay.values.method}
+                onChange={(method) => pay.set('method', method)}
+              />
+            ) : null}
+          </View>
+          {pay.values.amount && pay.values.method !== 'cash' ? (
+            <TextField label="Reference no." value={pay.values.reference} onChangeText={(reference) => pay.set('reference', reference)} error={pay.errors.reference} />
+          ) : null}
+          <Text variant="small" muted>
+            Leave it blank if they pay nothing now. Later payments, and post-dated cheques, go through Record payment.
+          </Text>
+        </View>
+        <View style={[styles.summary, { backgroundColor: colors.primarySoft }]}>
+          <Text>
+            {customer && cart.length > 0
+              ? `${customer.name} takes ${lines.map((l) => `${l.qty} × ${l.name}`).join(', ')} now${
+                  paidNow ? `, pays ${formatPeso(paidNow.amount)} now (${PAYMENT_LABELS[paidNow.method]})` : ''
+                } and pays ${formatPeso(later)} later. Refills swap their empties as usual.`
+              : 'Choose who is buying and what they take. Refills, new cylinders, accessories and sets can all be sold on credit.'}
+          </Text>
+        </View>
+        {error ? <Banner tone="danger">{error}</Banner> : null}
+      </Dialog>
+      <CustomerPickerDialog
+        visible={visible && choosing}
+        title="Who is buying on credit?"
+        onClose={() => setChoosing(false)}
+        onPick={(picked) => {
+          setCustomer(picked);
+          setChoosing(false);
+        }}
+      />
+    </>
+  );
+}
+
+/** The owner, an admin or the branch manager marks a deposited cheque cleared, or bounced (owed again). */
+function SettleChequeDialog({ cheque, onClose }: { cheque: ChequeInfo | null; onClose: () => void }) {
+  const work = useWork();
+  const toast = useToast();
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (cheque) {
+      setNote('');
+      setError(null);
+    }
+  }, [cheque]);
+
+  const settle = async (outcome: 'cleared' | 'bounced') => {
+    if (!cheque) return;
+    if (outcome === 'bounced' && note.trim().length < 3) return setError('Say why it bounced, like "Insufficient funds".');
+    setBusy(true);
+    setError(null);
+    try {
+      await settleCheque(work.ctx, { paymentId: cheque.entry.id, outcome, note });
+      toast.show(
+        outcome === 'cleared' ? 'Cheque marked cleared.' : `Cheque marked bounced. ${cheque.entry.borrowerName} owes ${formatPeso(cheque.amount)} again.`,
+        outcome === 'cleared' ? 'success' : 'info',
+      );
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog
+      visible={!!cheque}
+      title="Post-dated cheque"
+      onClose={onClose}
+      dismissable={!busy}
+      width={480}
+      actions={
+        <>
+          <Button title="Bounced" variant="danger" onPress={() => void settle('bounced')} disabled={busy} />
+          <Button title="Cleared" icon="checkmark" onPress={() => void settle('cleared')} loading={busy} />
+        </>
+      }
+    >
+      {cheque ? (
+        <>
+          <Text>
+            {`${formatPeso(cheque.amount)} from ${cheque.entry.borrowerName}: ${cheque.cheque.bank} cheque no. ${cheque.cheque.number}, can be cashed on ${formatDay(cheque.cheque.cashOn)}.`}
+          </Text>
+          <TextField label="Note (required if it bounced)" value={note} onChangeText={setNote} placeholder="e.g. Deposited at BPI Ipil" />
+        </>
+      ) : null}
+      {error ? <Banner tone="danger">{error}</Banner> : null}
+    </Dialog>
   );
 }
 
@@ -641,6 +996,7 @@ function PayDialog({ borrowerId, onClose }: { borrowerId: string | null; onClose
         title={`Payment from ${accounts.find((a) => a.borrower.id === paying?.borrowerId)?.borrower.name ?? ''}`}
         confirmLabel="Record payment"
         cancelLabel="Back"
+        allowCheque
         onCancel={() => setPaying(null)}
         onConfirm={async (payment) => {
           if (!paying) return;
@@ -704,7 +1060,7 @@ function AccountDialog({
             <View key={entry.id} style={[styles.listRow, { borderBottomColor: colors.border }]}>
               <Text style={styles.when}>{sinceText(entry.occurredAt)}</Text>
               <Text style={styles.flex}>
-                Refill on account{entry.saleId && salesById.get(entry.saleId) ? ` · ${salesById.get(entry.saleId)!.receiptNo}` : ''}
+                On account{entry.saleId && salesById.get(entry.saleId) ? ` · ${salesById.get(entry.saleId)!.receiptNo}` : ''}
               </Text>
               <Badge label={left === entry.amount ? `${formatPeso(left)} unpaid` : `${formatPeso(left)} of ${formatPeso(entry.amount)} left`} tone="warning" />
             </View>
@@ -804,6 +1160,18 @@ const styles = StyleSheet.create({
   pair: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, alignItems: 'flex-start' },
   half: { flexGrow: 1, flexBasis: 200 },
   qty: { width: 110 },
+  smallQty: { width: 70 },
+  itemRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+  },
+  addRow: { flexDirection: 'row' },
+  full: { flexBasis: '100%' },
   summary: { borderRadius: radius.md, padding: spacing.md },
   list: { borderWidth: 1, borderRadius: radius.md, overflow: 'hidden' },
   listRow: {

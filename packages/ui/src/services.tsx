@@ -25,11 +25,13 @@ import {
   type StoreRecord,
   type SyncStatus,
   type TextResult,
+  type User,
 } from '@sgm/core';
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
 import { AppGate } from './AppGate';
+import { ServicesContext, useServices } from './services-context';
 import { Text } from './Text';
 import { spacing, useTheme } from './theme';
 
@@ -121,9 +123,20 @@ export interface AppServices extends PlatformServices {
 export async function createAppServices(platform: PlatformServices): Promise<AppServices> {
   if (platform.api.mode === 'demo') await seedDemoData(platform.store);
 
-  const session = new SessionManager({ api: platform.api, secure: platform.secure, deviceId: platform.deviceId });
+  const session = new SessionManager({
+    api: platform.api,
+    secure: platform.secure,
+    deviceId: platform.deviceId,
+    findUser: (id) => platform.store.get<User>('users', id),
+  });
   await session.restore();
-  const sync = new SyncEngine({ store: platform.store, api: platform.api, getToken: session.token });
+  const sync = new SyncEngine({
+    store: platform.store,
+    api: platform.api,
+    getToken: session.token,
+    // A disabled account, or a token the server no longer takes, can't be used to sign in offline again.
+    onAuthError: () => void session.forgetOfflineSignIn(),
+  });
 
   // Sync right after someone signs in or out.
   let token = session.token();
@@ -149,8 +162,6 @@ export function once<T>(fn: () => Promise<T>): () => Promise<T> {
   let result: Promise<T> | null = null;
   return () => (result ??= fn());
 }
-
-const ServicesContext = createContext<AppServices | null>(null);
 
 /** Shows a loading screen while the app opens its database, then provides the services (behind AppGate, the owner's on/off switch). */
 export function ServicesBoundary({ create, children }: { create: () => Promise<AppServices>; children: ReactNode }) {
@@ -194,11 +205,7 @@ export function ServicesBoundary({ create, children }: { create: () => Promise<A
   );
 }
 
-export function useServices(): AppServices {
-  const services = useContext(ServicesContext);
-  if (!services) throw new Error('useServices must be used inside <ServicesBoundary>.');
-  return services;
-}
+export { useServices };
 
 export function useSession(): Session | null {
   const { session } = useServices();

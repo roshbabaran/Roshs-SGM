@@ -1,7 +1,7 @@
 /** The owner's product list and sets: adding them, changing prices, hiding them from sale. */
-import { LINE_TYPE_LABELS, unitPrice } from './cart';
+import { LINE_TYPE_LABELS, nestedSetNames, setContents, unitPrice } from './cart';
 import { uuid } from './ids';
-import type { Product, ProductSet } from './models';
+import type { NestedSet, Product, ProductSet, SetItem } from './models';
 import type { Centavos } from './money';
 import { saveAndQueue, type OpContext } from './operations';
 import { assertCan } from './roles';
@@ -59,7 +59,26 @@ export async function saveProduct(ctx: OpContext, input: ProductInput, id?: stri
   return product;
 }
 
-/** Adds a set (no id) or changes one. */
+/** Whether `set` has the set `targetId` inside it, directly or deeper down. */
+export function containsSet(set: Pick<ProductSet, 'sets'>, targetId: string, sets: Map<string, ProductSet>, seen = new Set<string>()): boolean {
+  for (const nested of set.sets ?? []) {
+    if (nested.setId === targetId) return true;
+    const child = sets.get(nested.setId);
+    if (child && !seen.has(child.id)) {
+      seen.add(child.id);
+      if (containsSet(child, targetId, sets, seen)) return true;
+    }
+  }
+  return false;
+}
+
+/** The sets that have this set inside them, directly or deeper down: changing it changes them too. */
+export function setsContaining(setId: string, sets: ProductSet[]): ProductSet[] {
+  const byId = new Map(sets.map((s) => [s.id, s]));
+  return sets.filter((s) => s.id !== setId && containsSet(s, setId, byId));
+}
+
+/** Adds a set (no id) or changes one. A set can hold products and other sets, but never itself. */
 export async function saveSet(ctx: OpContext, input: SetInput, id?: string): Promise<ProductSet> {
   assertCan(ctx.user, 'products.manage');
   const [products, sets] = await Promise.all([ctx.store.list<Product>('products'), ctx.store.list<ProductSet>('sets')]);
@@ -74,11 +93,22 @@ export async function saveSet(ctx: OpContext, input: SetInput, id?: string): Pro
     const fits = product.kind === 'cylinder' ? item.type !== 'item' : item.type === 'item';
     if (!fits) throw new Error(`${product.name} can't be sold as ${LINE_TYPE_LABELS[item.type].toLowerCase()}.`);
   }
+  const setId = current?.id ?? uuid();
+  const byId = new Map(sets.map((s) => [s.id, s]));
+  for (const nested of input.sets) {
+    const child = byId.get(nested.setId);
+    if (!child) throw new Error('One of the sets inside it no longer exists.');
+    if (child.id === setId || containsSet(child, setId, byId)) {
+      throw new Error(`${child.name} already has ${input.name} inside it, so it can't also go inside ${input.name}.`);
+    }
+  }
+  if (input.items.length === 0 && input.sets.length === 0) throw new Error('Add at least one item or set.');
 
   const set: ProductSet = {
-    id: current?.id ?? uuid(),
+    id: setId,
     name: input.name,
     items: input.items,
+    ...(input.sets.length > 0 ? { sets: input.sets } : {}),
     price: input.price,
     active: input.active,
     receivedAt: null,
@@ -88,20 +118,53 @@ export async function saveSet(ctx: OpContext, input: SetInput, id?: string): Pro
   return set;
 }
 
-/** What a set's items cost when bought one by one. */
-export function regularPrice(set: Pick<ProductSet, 'items'>, products: Map<string, Product>): Centavos {
-  return set.items.reduce((sum, item) => {
+function itemsPrice(items: SetItem[], products: Map<string, Product>): Centavos {
+  return items.reduce((sum, item) => {
     const product = products.get(item.productId);
     return product ? sum + unitPrice(product, item.type) * item.qty : sum;
   }, 0);
 }
 
-/** "1 × Brand A 11 kg (new), 1 × LPG regulator" */
-export function describeSet(set: Pick<ProductSet, 'items'>, products: Map<string, Product>): string {
-  return set.items
-    .map((item) => {
-      const name = products.get(item.productId)?.name ?? 'Missing product';
-      return `${item.qty} × ${name}${item.type === 'item' ? '' : ` (${item.type})`}`;
-    })
+/**
+ * What everything in a set costs when bought one by one at the products'
+ * regular prices, with the sets inside it opened up (so a set inside never
+ * counts at its own lower price). A set's saving is measured against this.
+ */
+export function regularPrice(
+  set: Pick<ProductSet, 'items' | 'sets'> & { id?: string },
+  products: Map<string, Product>,
+  sets: Map<string, ProductSet> = new Map(),
+): Centavos {
+  return itemsPrice(setContents(set, sets), products);
+}
+
+/**
+ * The price a new set gets until the owner types one: its own items at their
+ * regular prices, plus each set inside it at that set's price.
+ */
+export function suggestedSetPrice(
+  set: Pick<ProductSet, 'items'> & { sets?: NestedSet[] },
+  products: Map<string, Product>,
+  sets: Map<string, ProductSet>,
+): Centavos {
+  return itemsPrice(set.items, products) + (set.sets ?? []).reduce((sum, n) => sum + (sets.get(n.setId)?.price ?? 0) * n.qty, 0);
+}
+
+const itemText = (item: SetItem, products: Map<string, Product>) =>
+  `${item.qty} × ${products.get(item.productId)?.name ?? 'Missing product'}${item.type === 'item' ? '' : ` (${item.type})`}`;
+
+/** Everything in a set as products, the way the counter shows it: "1 × Brand A 11 kg (new), 1 × LPG regulator". */
+export function describeSet(
+  set: Pick<ProductSet, 'items' | 'sets'> & { id?: string },
+  products: Map<string, Product>,
+  sets: Map<string, ProductSet> = new Map(),
+): string {
+  return setContents(set, sets)
+    .map((item) => itemText(item, products))
     .join(', ');
+}
+
+/** A set as it was put together, for the Products page: the sets inside it by name, then its own items. */
+export function describeSetParts(set: Pick<ProductSet, 'items' | 'sets'>, products: Map<string, Product>, sets: Map<string, ProductSet>): string {
+  return [...nestedSetNames(set.sets, sets).map((name) => `${name} (set)`), ...set.items.map((item) => itemText(item, products))].join(', ');
 }

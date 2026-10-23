@@ -8,6 +8,12 @@
  *   GET  /sync/pull?cursor=...                      -> PullResult
  *   GET  /app/status                                -> AppStatus (app-policy.ts)
  *
+ * Users & Devices (users.manage; only the owner may change the owner's and admins' accounts):
+ *   POST /admin/users                { user: UserInput }      -> User
+ *   GET  /admin/devices                                       -> Device[]
+ *   POST /admin/devices              { device: DeviceInput }  -> Device
+ *   POST /admin/devices/remove       { id }                   -> { ok: true }
+ *
  * Every request names the app and its version in the X-SGM-App header
  * ("desk/1.2.0"). When the owner has turned SGM off or this version is too old,
  * the server refuses sign-in and sync with 423 or 426.
@@ -17,10 +23,19 @@
  *   sales, movements: pos.sell (sales), inventory.record (hand-recorded movements),
  *     sales.void (voided sales)
  *   products, sets: products.manage
- *   borrowers, loans: borrow.manage (credit, cylinders lent and returned, payments)
+ *   borrowers (customers): pos.sell or borrow.manage; products.manage to change a customer's discount
+ *   loans: borrow.manage (credit, cylinders lent and returned, payments); cheques.manage to mark
+ *     a post-dated cheque cleared or bounced
+ *   claims: pos.sell (pick ups, and returns and defectives waiting for approval); claims.approve
+ *     to approve or reject them
+ *   sales with a discount given at the counter: pos.discount too
+ *   movements: PICKUP pos.sell; RETURN_IN and DEFECTIVE_EXCHANGE claims.approve; a Stocks In that accepts a
+ *     Stocks Out, and TRANSFER_FIX, inventory.receive, at the branch it names, and they must match that Stocks Out
+ *     (transfers.ts)
  */
 import type { AppStatus } from './app-policy';
-import type { Borrower, ISODate, LoanEntry, Location, OutboxEntry, Product, ProductSet, Sale, StockMovement, User } from './models';
+import type { Borrower, Claim, Device, ISODate, LoanEntry, Location, OutboxEntry, Product, ProductSet, Sale, StockMovement, User } from './models';
+import type { Permission, Role } from './roles';
 
 export interface LoginResult {
   token: string;
@@ -41,7 +56,8 @@ export type PulledChange =
   | { collection: 'sales'; records: Sale[] }
   | { collection: 'movements'; records: StockMovement[] }
   | { collection: 'borrowers'; records: Borrower[] }
-  | { collection: 'loans'; records: LoanEntry[] };
+  | { collection: 'loans'; records: LoanEntry[] }
+  | { collection: 'claims'; records: Claim[] };
 
 /** Everything that changed on the server since `cursor`: new prices and sets, users, other devices' sales and loans. */
 export interface PullResult {
@@ -63,6 +79,27 @@ export class ApiError extends Error {
   }
 }
 
+/** A new account (no id) or changes to one, from the Users & Devices window. */
+export interface UserInput {
+  id?: string;
+  username: string;
+  displayName: string;
+  role: Role;
+  locationIds: string[];
+  extraPermissions: Permission[];
+  active: boolean;
+  /** Required for a new account; when changing one, a new PIN or nothing to keep the old one. */
+  pin?: string;
+}
+
+/** Approving, naming or placing a device; a device can be added by its ID before it first signs in. */
+export interface DeviceInput {
+  id: string;
+  label: string;
+  locationId: string | null;
+  approved: boolean;
+}
+
 export interface ApiClient {
   readonly mode: 'demo' | 'server';
   login(username: string, pin: string, deviceId: string): Promise<LoginResult>;
@@ -70,6 +107,13 @@ export interface ApiClient {
   pull(cursor: string | null, token: string): Promise<PullResult>;
   /** Whether the owner lets this version of the app run (sgm.app_policy). */
   appStatus(): Promise<AppStatus>;
+  /** Creates or changes an account. Needs a connection; returns the user record as every device will receive it. */
+  saveUser(input: UserInput, token: string): Promise<User>;
+  /** Every PC and phone that has signed in or was added. */
+  listDevices(token: string): Promise<Device[]>;
+  saveDevice(input: DeviceInput, token: string): Promise<Device>;
+  /** Removes a device: it can't sign in or sync until it is added again. */
+  removeDevice(id: string, token: string): Promise<void>;
 }
 
 export class HttpApi implements ApiClient {
@@ -95,6 +139,22 @@ export class HttpApi implements ApiClient {
 
   appStatus(): Promise<AppStatus> {
     return this.request<AppStatus>('GET', '/app/status');
+  }
+
+  saveUser(input: UserInput, token: string): Promise<User> {
+    return this.request<User>('POST', '/admin/users', { user: input }, token);
+  }
+
+  listDevices(token: string): Promise<Device[]> {
+    return this.request<Device[]>('GET', '/admin/devices', undefined, token);
+  }
+
+  saveDevice(input: DeviceInput, token: string): Promise<Device> {
+    return this.request<Device>('POST', '/admin/devices', { device: input }, token);
+  }
+
+  async removeDevice(id: string, token: string): Promise<void> {
+    await this.request<{ ok: true }>('POST', '/admin/devices/remove', { id }, token);
   }
 
   private async request<T>(method: string, path: string, body?: unknown, token?: string): Promise<T> {

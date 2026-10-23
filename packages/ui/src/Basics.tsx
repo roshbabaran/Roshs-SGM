@@ -165,6 +165,45 @@ export function StatTile({
   );
 }
 
+/** A box to tick, with its label. */
+export function Checkbox({
+  label,
+  checked,
+  onChange,
+  hint,
+  disabled,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked, disabled }}
+      accessibilityLabel={label}
+      disabled={disabled}
+      onPress={() => onChange(!checked)}
+      style={[styles.checkRow, disabled && styles.disabled]}
+    >
+      <View style={[styles.checkBox, { borderColor: checked ? colors.primary : colors.border, backgroundColor: checked ? colors.primary : colors.surface }]}>
+        {checked ? <Icon name="checkmark" size={14} color={colors.primaryText} /> : null}
+      </View>
+      <View style={styles.flex}>
+        <Text>{label}</Text>
+        {hint ? (
+          <Text variant="small" muted>
+            {hint}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
 export function EmptyState({ icon, title, message }: { icon: IconName; title: string; message?: string }) {
   const { colors } = useTheme();
   return (
@@ -227,4 +266,7 @@ const styles = StyleSheet.create({
   },
   statIcon: { width: 40, height: 40, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   empty: { alignItems: 'center', justifyContent: 'center', gap: spacing.sm, padding: spacing.xl },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.xs, cursor: 'pointer' },
+  checkBox: { width: 20, height: 20, borderRadius: 5, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  disabled: { opacity: 0.5 },
 });

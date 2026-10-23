@@ -1,7 +1,7 @@
 // SGM API: the calls in packages/core/src/api.ts, backed by Supabase Postgres, plus app updates
 // served from the private releases repo on GitHub (GITHUB_RELEASES_REPO, GITHUB_RELEASES_TOKEN).
 // Deploy: npx supabase functions deploy api --no-verify-jwt --use-api
-import { Hono } from 'npm:hono@4';
+import { Hono, type Context } from 'npm:hono@4';
 import { cors } from 'npm:hono@4/cors';
 import { jwtVerify, SignJWT } from 'npm:jose@6';
 import postgres from 'npm:postgres@3';
@@ -18,53 +18,114 @@ const RELEASE_TAG: Record<string, string> = { desk: 'desk-v', android: 'pocket-v
 const VERSION_FILE: Record<string, string> = { desk: 'latest.yml', android: 'latest.json' };
 
 // Copied from packages/core/src/roles.ts (the function runs on Deno and can't import @sgm/core). Keep them in step.
+const PERMISSIONS = [
+  'dashboard.view', 'pos.sell', 'pos.discount', 'borrow.manage', 'cheques.manage', 'claims.approve', 'sales.view', 'sales.void',
+  'inventory.view', 'inventory.record', 'inventory.receive', 'reports.view', 'products.manage', 'users.manage', 'settings.device',
+  'backups.manage',
+];
 const ROLE_PERMISSIONS: Record<string, string[]> = {
-  owner: ['dashboard.view', 'pos.sell', 'borrow.manage', 'sales.view', 'sales.void', 'inventory.view', 'inventory.record', 'reports.view', 'products.manage', 'users.manage', 'settings.device', 'backups.manage'],
+  owner: PERMISSIONS,
+  admin: PERMISSIONS,
+  manager: [
+    'dashboard.view', 'pos.sell', 'pos.discount', 'borrow.manage', 'cheques.manage', 'claims.approve', 'sales.void', 'sales.view',
+    'inventory.view', 'inventory.record', 'inventory.receive', 'reports.view',
+  ],
   employee: ['dashboard.view', 'pos.sell', 'borrow.manage', 'sales.view', 'inventory.view'],
-  warehouse: ['inventory.view', 'inventory.record'],
+  warehouse: ['inventory.view', 'inventory.record', 'inventory.receive'],
 };
+// Only ever come with a role, never given to anyone else (ROLE_ONLY): backups are the owner's and admins', and
+// accepting stock from other branches is theirs, the branch managers' and the warehouse staff's.
+const ROLE_ONLY = ['backups.manage', 'inventory.receive'];
 const MANUAL_MOVEMENTS = ['OPENING', 'DELIVERY_IN', 'TRANSFER_IN', 'TRANSFER_OUT', 'ADJUSTMENT', 'DAMAGED', 'RETURN_TO_SUPPLIER'];
 const LEDGERS = ['movements', 'loans']; // entries are only ever added, never changed
+const CLAIM_KINDS = ['pickup', 'return', 'defective'];
+// Collections an older version of the apps can't store, and the version that added them. SGM Desk 1.0 refuses a
+// whole pull that holds one, so pull() leaves them out for it.
+const ADDED_IN: Record<string, string> = { claims: '1.1.0' };
 
 type Doc = Record<string, any>;
 type Entry = { id: string; collection: string; recordId: string; payload: Doc };
 type Auth = { user: Doc; deviceId: string };
 
 const can = (user: Doc, permission: string) =>
-  user.active === true && ((ROLE_PERMISSIONS[user.role] ?? []).includes(permission) || (user.extraPermissions ?? []).includes(permission));
+  user.active === true && ((ROLE_PERMISSIONS[user.role] ?? []).includes(permission) ||
+    (!ROLE_ONLY.includes(permission) && (user.extraPermissions ?? []).includes(permission)));
 
-const worksAt = (user: Doc, locationId: string) => user.role === 'owner' || (user.locationIds ?? []).includes(locationId);
+// The owner and admins work at every branch and warehouse (worksEverywhere in roles.ts).
+const worksAt = (user: Doc, locationId: string) =>
+  user.role === 'owner' || user.role === 'admin' || (user.locationIds ?? []).includes(locationId);
 
-/** The permission a change needs, and the person and branch the record names (see the comment in api.ts). */
-function ruleFor(collection: string, r: Doc): { permission: string; actorId?: string; locationId?: string } | null {
+/** Only the owner may create or change the owner's and admins' accounts (canManageAccount in roles.ts). */
+const canManageAccount = (manager: Doc, role: string) =>
+  can(manager, 'users.manage') && (manager.role === 'owner' || (role !== 'owner' && role !== 'admin'));
+
+/** JSON with its keys sorted, to tell whether two records hold the same value. */
+const canonical = (value: unknown): string =>
+  JSON.stringify(value ?? null, (_key, v) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v);
+
+/**
+ * The permissions a change needs (any one of `anyOf`, and all of `also`), and the person and branch the record
+ * names (see the comment in api.ts). `old` is the record as the server has it, if it has it.
+ */
+type Rule = { anyOf: string[]; also?: string[]; actorId?: string; locationId?: string };
+
+function ruleFor(collection: string, r: Doc, old: Doc | null): Rule | null {
   switch (collection) {
-    case 'sales':
-      return r.status === 'voided'
-        ? { permission: 'sales.void', actorId: r.voidedBy, locationId: r.locationId }
-        : { permission: 'pos.sell', actorId: r.cashierId, locationId: r.locationId };
-    case 'movements': {
-      const permission = MANUAL_MOVEMENTS.includes(r.type) ? 'inventory.record'
-        : r.type === 'VOID_REVERSAL' ? 'sales.void'
-        : r.type === 'CYLINDER_RETURN' ? 'borrow.manage'
-        : 'pos.sell';
-      return { permission, actorId: r.userId, locationId: r.locationId };
+    case 'sales': {
+      // Voided at Transactions, or by an approved return of the whole sale in Claims.
+      if (r.status === 'voided') return { anyOf: ['sales.void', 'claims.approve'], actorId: r.voidedBy, locationId: r.locationId };
+      const lines: Doc[] = Array.isArray(r.lines) ? r.lines : [];
+      const also = [
+        ...(lines.some((line) => line.discount?.source === 'counter') ? ['pos.discount'] : []),
+        ...(r.payment?.method === 'credit' || lines.some((line) => line.type === 'borrow') ? ['borrow.manage'] : []),
+      ];
+      return { anyOf: ['pos.sell'], also, actorId: r.cashierId, locationId: r.locationId };
     }
-    case 'loans':
-      return { permission: 'borrow.manage', actorId: r.userId, locationId: r.locationId };
-    case 'borrowers':
-      return { permission: 'borrow.manage' };
+    case 'movements': {
+      // Stock sent from another branch is accepted at the receiving branch, and a count that didn't match is settled
+      // at the sending one, by its manager or warehouse staff, an admin or the owner (transfers.ts).
+      const anyOf = r.type === 'TRANSFER_FIX' || (r.type === 'TRANSFER_IN' && r.transferId !== undefined) ? ['inventory.receive']
+        : MANUAL_MOVEMENTS.includes(r.type) ? ['inventory.record']
+        : r.type === 'VOID_REVERSAL' ? ['sales.void', 'claims.approve']
+        : r.type === 'RETURN_IN' || r.type === 'DEFECTIVE_EXCHANGE' ? ['claims.approve']
+        : r.type === 'CYLINDER_RETURN' ? ['borrow.manage']
+        : ['pos.sell']; // SALE, EMPTY_IN and PICKUP
+      return { anyOf, actorId: r.userId, locationId: r.locationId };
+    }
+    case 'loans': {
+      const anyOf = r.kind === 'cheque_cleared' || r.kind === 'cheque_bounced' ? ['cheques.manage']
+        // Voiding a sale on credit takes it off the account too.
+        : r.kind === 'void' ? ['borrow.manage', 'sales.void', 'claims.approve']
+        : ['borrow.manage'];
+      return { anyOf, actorId: r.userId, locationId: r.locationId };
+    }
+    case 'borrowers': {
+      // Anyone selling can add a customer; only someone who sets prices can give or change a customer's discount.
+      const discountChanged = canonical(r.discount) !== canonical(old?.discount);
+      return { anyOf: ['pos.sell', 'borrow.manage', 'products.manage'], also: discountChanged ? ['products.manage'] : [] };
+    }
+    case 'claims': {
+      if (!CLAIM_KINDS.includes(r.kind)) return null;
+      // Returns and defective exchanges are asked for at the counter and decided by the owner, an admin or the
+      // branch's manager.
+      const decided = r.kind !== 'pickup' && r.status !== 'pending';
+      return decided
+        ? { anyOf: ['claims.approve'], actorId: r.decidedBy, locationId: r.locationId }
+        : { anyOf: ['pos.sell'], actorId: r.requestedBy, locationId: r.locationId };
+    }
     case 'products':
     case 'sets':
-      return { permission: 'products.manage' };
+      return { anyOf: ['products.manage'] };
     default:
       return null;
   }
 }
 
 /** Why the server refuses this change, in words a person can act on; null when it's allowed. */
-async function problemWith(tx: postgres.TransactionSql, auth: Auth, e: Entry): Promise<string | null> {
+async function problemWith(tx: postgres.TransactionSql, auth: Auth, e: Entry, old: Doc | null): Promise<string | null> {
   const r = e.payload;
-  const rule = r && r.id === e.recordId ? ruleFor(e.collection, r) : null;
+  const rule = r && r.id === e.recordId ? ruleFor(e.collection, r, old) : null;
   if (!rule) return 'The server does not accept this kind of change.';
   let actor = auth.user;
   if (rule.actorId && rule.actorId !== auth.user.id) {
@@ -76,9 +137,41 @@ async function problemWith(tx: postgres.TransactionSql, auth: Auth, e: Entry): P
     if (!row) return 'The person named on this record has never signed in on this device.';
     actor = row.doc;
   }
-  if (!can(actor, rule.permission)) return `${actor.displayName} isn't allowed to do this (${rule.permission}).`;
+  const missing = rule.anyOf.some((p) => can(actor, p)) ? (rule.also ?? []).find((p) => !can(actor, p)) : rule.anyOf.join(' or ');
+  if (missing) return `${actor.displayName} isn't allowed to do this (${missing}).`;
   if (rule.locationId && !worksAt(actor, rule.locationId)) return `${actor.displayName} isn't assigned to ${rule.locationId}.`;
+  if (e.collection === 'movements' && (r.transferId !== undefined || r.type === 'TRANSFER_FIX')) return await transferProblem(tx, r);
   return null;
+}
+
+/**
+ * A Stocks Out that waits to be accepted, and the movements that accept and settle it, must agree (transfers.ts):
+ * the same product and condition, the two branches the right way round, and ids made from the Stocks Out's id, so
+ * that stock accepted twice (on two devices while offline) is kept once.
+ */
+async function transferProblem(tx: postgres.TransactionSql, r: Doc): Promise<string | null> {
+  if (r.type === 'TRANSFER_OUT') {
+    const filledIn = r.transferId === r.id && typeof r.counterpartLocationId === 'string' && r.counterpartLocationId !== r.locationId && r.qty < 0;
+    return filledIn ? null : 'This Stocks Out is not filled in right.';
+  }
+  if (r.type !== 'TRANSFER_IN' && r.type !== 'TRANSFER_FIX') return 'The server does not accept this kind of change.';
+  const movement = async (id: string): Promise<Doc | undefined> =>
+    (await tx`select doc from sgm.records where collection = 'movements' and id = ${id}`)[0]?.doc;
+  const sent = typeof r.transferId === 'string' ? await movement(r.transferId) : undefined;
+  if (!sent || sent.type !== 'TRANSFER_OUT' || sent.transferId !== sent.id) return 'The Stocks Out this answers is not on the server.';
+  const wrong = "This doesn't match the Stocks Out it answers.";
+  const same = r.productId === sent.productId && r.condition === sent.condition && Number.isInteger(r.qty);
+  if (r.type === 'TRANSFER_IN') {
+    const accepts = r.id === `${sent.id}-in` && r.locationId === sent.counterpartLocationId && r.counterpartLocationId === sent.locationId && r.qty >= 0;
+    return same && accepts ? null : wrong;
+  }
+  const accepted = await movement(`${sent.id}-in`);
+  if (!accepted) return 'This stock has not been accepted yet, so there is nothing to settle.';
+  // What didn't arrive goes back on the sender's count, or more sent than recorded comes off it; or nothing changes.
+  const difference = -sent.qty - accepted.qty;
+  const settles = r.id === `${sent.id}-settled` && r.locationId === sent.locationId && r.counterpartLocationId === sent.counterpartLocationId &&
+    difference !== 0 && (r.qty === 0 || r.qty === difference);
+  return same && settles ? null : wrong;
 }
 
 async function push(auth: Auth, entries: Entry[]) {
@@ -90,16 +183,20 @@ async function push(auth: Auth, entries: Entry[]) {
       const [seen] = await tx`select received_at from sgm.sync_receipts where entry_id = ${e.id}`;
       if (seen) return { receivedAt: seen.received_at as Date };
 
-      const problem = await problemWith(tx, auth, e);
+      const [old] = await tx`select doc, received_at from sgm.records where collection = ${e.collection} and id = ${e.recordId}`;
+      const problem = await problemWith(tx, auth, e, old?.doc ?? null);
       if (problem) {
         console.warn(`Rejected ${e.collection} ${e.recordId} from ${auth.user.username}: ${problem}`);
         return { problem };
       }
 
       const r = e.payload;
-      const [old] = await tx`select doc, received_at from sgm.records where collection = ${e.collection} and id = ${e.recordId}`;
-      // Ledger entries never change; a sale may only change from completed to voided.
-      const keepOld = old && (LEDGERS.includes(e.collection) || (e.collection === 'sales' && !(old.doc.status === 'completed' && r.status === 'voided')));
+      // Ledger entries never change; a sale may only change from completed to voided; a claim only while it waits
+      // for approval.
+      const keepOld = old && (
+        LEDGERS.includes(e.collection) ||
+        (e.collection === 'sales' && !(old.doc.status === 'completed' && r.status === 'voided')) ||
+        (e.collection === 'claims' && old.doc.status !== 'pending'));
       let receivedAt: Date = old?.received_at;
       if (!keepOld) {
         const [row] = await tx`
@@ -119,13 +216,18 @@ async function push(auth: Auth, entries: Entry[]) {
   return { accepted, rejected };
 }
 
-async function pull(cursor: string | undefined) {
+/** Changes after `cursor`, leaving out collections the app named in the X-SGM-App header can't store. */
+async function pull(cursor: string | undefined, appHeader: string | undefined) {
   const from = Number(cursor ?? 0) || 0;
   const [state] = await sql`select last_seq from sgm.sync_state where id = 1`;
   const upTo = Math.min(Number(state.last_seq), from + MAX_PER_PULL);
   const rows = await sql`select collection, doc, received_at from sgm.records where seq > ${from} and seq <= ${upTo} order by seq`;
+  // The browser preview sends no header; it is always the current version.
+  const version = (appHeader ?? '').split('/')[1];
   const changes = new Map<string, Doc[]>();
   for (const row of rows) {
+    const addedIn = ADDED_IN[row.collection];
+    if (version && addedIn && compareVersions(version, addedIn) < 0) continue;
     // Locations and users have no receivedAt; everything else gets the server's time.
     const record = row.collection === 'locations' || row.collection === 'users' ? row.doc : { ...row.doc, receivedAt: row.received_at.toISOString() };
     if (!changes.has(row.collection)) changes.set(row.collection, []);
@@ -211,7 +313,7 @@ app.use('*', cors({ origin: ['app://sgm', 'http://localhost:8081'], allowHeaders
 
 // When the owner turns SGM off or raises the minimum version, sign-in and sync stop until the app is allowed again.
 // 423 and 426, not 401: HttpApi turns every 401 into "Your sign-in has expired".
-for (const path of ['/auth/*', '/sync/*']) {
+for (const path of ['/auth/*', '/sync/*', '/admin/*']) {
   app.use(path, async (c, next) => {
     const status = await appStatusOf(c.req.header('X-SGM-App'));
     if (status.state === 'disabled') return c.text(status.message ?? 'The owner has turned SGM off for now.', 423);
@@ -276,7 +378,149 @@ app.post('/sync/push', async (c) => {
 app.get('/sync/pull', async (c) => {
   const auth = await authOf(c.req.header('Authorization'));
   if (!auth) return c.text('Sign in again.', 401);
-  return c.json(await pull(c.req.query('cursor')));
+  return c.json(await pull(c.req.query('cursor'), c.req.header('X-SGM-App')));
+});
+
+// Users & Devices (packages/core/src/api.ts): the owner and admins manage accounts and devices from the apps.
+// Refusals are 400, 403, 404 or 409 with a message the window shows as it is.
+
+/** The signed-in person, when they may manage users and devices; otherwise the response to send. */
+async function managerOf(c: Context): Promise<Auth | Response> {
+  const auth = await authOf(c.req.header('Authorization'));
+  if (!auth) return c.text('Sign in again.', 401);
+  if (!can(auth.user, 'users.manage')) return c.text('Only the owner or an admin can manage users and devices.', 403);
+  return auth;
+}
+
+const USERNAME = /^[a-z0-9._-]{3,30}$/;
+const PIN = /^[0-9]{4,8}$/;
+
+/** Reads a UserInput, or says what is wrong with it. */
+function userInput(body: unknown): Doc | string {
+  const u = (body as Doc)?.user as Doc | undefined;
+  if (!u || typeof u !== 'object') return 'Send the account to save.';
+  if (u.id !== undefined && (typeof u.id !== 'string' || !u.id)) return 'Unknown account.';
+  if (typeof u.username !== 'string' || !USERNAME.test(u.username.trim().toLowerCase())) {
+    return 'Usernames are 3 to 30 letters, numbers, dots, dashes or underscores, like maria.s.';
+  }
+  if (typeof u.displayName !== 'string' || u.displayName.trim().length < 2 || u.displayName.length > 60) return 'Enter their name.';
+  if (!Object.hasOwn(ROLE_PERMISSIONS, u.role)) return 'Choose a role.';
+  if (!Array.isArray(u.locationIds) || u.locationIds.length === 0 || !u.locationIds.every((l: unknown) => typeof l === 'string')) {
+    return 'Choose at least one branch or warehouse they work at.';
+  }
+  if (!Array.isArray(u.extraPermissions) || !u.extraPermissions.every((p: unknown) => PERMISSIONS.includes(p as string))) return 'Unknown permission.';
+  if (typeof u.active !== 'boolean') return 'Say whether the account is active.';
+  if (u.pin !== undefined && (typeof u.pin !== 'string' || !PIN.test(u.pin))) return 'A PIN is 4 to 8 digits.';
+  return u;
+}
+
+app.post('/admin/users', async (c) => {
+  const auth = await managerOf(c);
+  if (auth instanceof Response) return auth;
+  const input = userInput(await c.req.json().catch(() => null));
+  if (typeof input === 'string') return c.text(input, 400);
+  const manager = auth.user;
+  const username = input.username.trim().toLowerCase();
+
+  const outcome = await sql.begin(async (tx): Promise<{ status: 400 | 403 | 404 | 409; message: string } | { user: Doc }> => {
+    const [current] = input.id ? await tx`select doc from sgm.records where collection = 'users' and id = ${input.id} for update` : [];
+    if (input.id && !current) return { status: 404, message: 'That account no longer exists.' };
+    const old: Doc | null = current?.doc ?? null;
+    if (!canManageAccount(manager, input.role) || (old && !canManageAccount(manager, old.role))) {
+      return { status: 403, message: "Only the owner can change the owner's and admins' accounts." };
+    }
+    if (old && old.id === manager.id && (!input.active || input.role !== old.role)) {
+      return { status: 400, message: "You can't disable your own account or change your own role." };
+    }
+    const hadUsersManage = (old?.extraPermissions ?? []).includes('users.manage');
+    if (manager.role !== 'owner' && input.extraPermissions.includes('users.manage') && !hadUsersManage) {
+      return { status: 403, message: 'Only the owner can let someone else manage users and devices.' };
+    }
+    if (!old && !input.pin) return { status: 400, message: 'Give them a PIN of 4 to 8 digits.' };
+    const known = await tx`select id from sgm.records where collection = 'locations' and id in ${tx(input.locationIds)}`;
+    if (known.length !== new Set(input.locationIds).size) return { status: 400, message: 'One of those branches or warehouses no longer exists.' };
+    const [taken] = await tx`select user_id from sgm.logins where username = ${username} and user_id <> ${old?.id ?? ''}`;
+    if (taken) return { status: 409, message: `The username ${username} is taken.` };
+
+    const user: Doc = {
+      id: old?.id ?? crypto.randomUUID(),
+      username,
+      displayName: input.displayName.trim().replace(/\s+/g, ' '),
+      role: input.role,
+      extraPermissions: input.extraPermissions.filter((p: string) => !ROLE_PERMISSIONS[input.role].includes(p) && !ROLE_ONLY.includes(p)),
+      locationIds: [...new Set(input.locationIds as string[])],
+      active: input.active,
+    };
+    if (input.pin) {
+      // A new PIN also clears the wrong-PIN lock.
+      await tx`
+        insert into sgm.logins (user_id, username, pin_hash)
+        values (${user.id}, ${username}, extensions.crypt(${input.pin}, extensions.gen_salt('bf', 10)))
+        on conflict (user_id) do update set username = excluded.username, pin_hash = excluded.pin_hash, failed_logins = 0`;
+    } else {
+      await tx`update sgm.logins set username = ${username} where user_id = ${user.id}`;
+    }
+    await tx`select sgm.save('users', ${tx.json(user)})`;
+    return { user };
+  });
+  if ('user' in outcome) return c.json(outcome.user);
+  return c.text(outcome.message, outcome.status);
+});
+
+/** A row of sgm.devices as the apps' Device. */
+const deviceOf = (row: Doc) => ({
+  id: row.id,
+  label: row.label ?? null,
+  approved: row.approved,
+  locationId: row.location_id ?? null,
+  firstSeenAt: new Date(row.first_seen_at).toISOString(),
+  lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).toISOString() : null,
+  lastUserId: row.last_user_id ?? null,
+});
+
+app.get('/admin/devices', async (c) => {
+  const auth = await managerOf(c);
+  if (auth instanceof Response) return auth;
+  const rows = await sql`select * from sgm.devices order by last_seen_at desc nulls last, first_seen_at desc`;
+  return c.json(rows.map(deviceOf));
+});
+
+app.post('/admin/devices', async (c) => {
+  const auth = await managerOf(c);
+  if (auth instanceof Response) return auth;
+  const d = ((await c.req.json().catch(() => null)) as Doc | null)?.device as Doc | undefined;
+  if (!d || typeof d.id !== 'string' || !d.id.trim()) return c.text('Choose a device.', 400);
+  if (typeof d.label !== 'string' || d.label.length > 60) return c.text('Keep the name under 60 characters.', 400);
+  if (typeof d.approved !== 'boolean') return c.text('Say whether the device is approved.', 400);
+  if (d.locationId !== null && typeof d.locationId !== 'string') return c.text('Unknown branch or warehouse.', 400);
+  const id = d.id.trim();
+  const [seen] = await sql`select 1 from sgm.devices where id = ${id}`;
+  // A device added ahead of its first sign-in is named by the ID its Settings page shows.
+  if (!seen && !/^[A-Za-z0-9-]{8,64}$/.test(id)) return c.text("Paste the Device ID from the device's Settings page.", 400);
+  if (id === auth.deviceId && !d.approved) return c.text("You can't take away approval from the device you are using.", 400);
+  if (d.locationId) {
+    const [known] = await sql`select 1 from sgm.records where collection = 'locations' and id = ${d.locationId}`;
+    if (!known) return c.text('That branch or warehouse no longer exists.', 400);
+  }
+  const [row] = await sql`
+    insert into sgm.devices (id, label, approved, location_id) values (${id}, ${d.label.trim() || null}, ${d.approved}, ${d.locationId ?? null})
+    on conflict (id) do update set label = excluded.label, approved = excluded.approved, location_id = excluded.location_id
+    returning *`;
+  return c.json(deviceOf(row));
+});
+
+app.post('/admin/devices/remove', async (c) => {
+  const auth = await managerOf(c);
+  if (auth instanceof Response) return auth;
+  const { id } = ((await c.req.json().catch(() => null)) ?? {}) as Doc;
+  if (typeof id !== 'string' || !id) return c.text('Choose a device.', 400);
+  if (id === auth.deviceId) return c.text("You can't remove the device you are using.", 400);
+  // Its sign-in history goes too, so offline work queued on it can't be sent until it is approved again.
+  await sql.begin(async (tx) => {
+    await tx`delete from sgm.device_users where device_id = ${id}`;
+    await tx`delete from sgm.devices where id = ${id}`;
+  });
+  return c.json({ ok: true });
 });
 
 app.get('/app/status', async (c) => c.json(await appStatusOf(c.req.header('X-SGM-App'))));

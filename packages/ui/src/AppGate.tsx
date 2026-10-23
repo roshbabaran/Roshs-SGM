@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { Button } from './Button';
-import { useServices } from './services';
+import { useServices } from './services-context';
 import { Text } from './Text';
 import { radius, spacing, useTheme } from './theme';
 

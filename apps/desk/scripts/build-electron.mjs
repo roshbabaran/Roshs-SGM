@@ -49,6 +49,9 @@ if (!dev) {
   cpSync(dist, path.join(out, 'renderer'), { recursive: true });
 }
 
+// The window's own icon, for the taskbar while developing (the installer gives SGM Desk.exe the same one).
+cpSync(path.join(root, 'build-resources', 'icon.png'), path.join(out, 'icon.png'));
+
 writeFileSync(
   path.join(out, 'package.json'),
   JSON.stringify(

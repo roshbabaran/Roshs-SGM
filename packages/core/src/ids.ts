@@ -40,3 +40,14 @@ export function uuid(): string {
 export function shortId(id: string): string {
   return id.replace(/-/g, '').slice(0, 6).toUpperCase();
 }
+
+/** Letters and digits that can't be mistaken for each other when read aloud or copied by hand. */
+const CODE_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+
+/** A 6-character code for a prepaid receipt, e.g. "K7Q2MX". The customer shows it to pick up the order. */
+export function claimCode(): string {
+  const hex = uuid().replace(/-/g, '');
+  let code = '';
+  for (let i = 0; i < 6; i++) code += CODE_LETTERS[parseInt(hex.slice(i * 4, i * 4 + 4), 16) % CODE_LETTERS.length];
+  return code;
+}

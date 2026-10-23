@@ -127,6 +127,16 @@ describe('recordMovement', () => {
     ).rejects.toBeInstanceOf(StockError);
   });
 
+  it('moves stock marked defective into the defective count', async () => {
+    const { ctx, stock } = await setup();
+    const before = await stock('lpg-a-11', 'warehouse');
+    await recordMovement(ctx(warehouse, 'warehouse'), form({ type: 'DAMAGED', condition: 'empty', qty: '2', reason: 'Dented valve' }));
+    expect(await stock('lpg-a-11', 'warehouse')).toEqual({ ...before, empty: before.empty - 2, defective: before.defective + 2 });
+    await expect(
+      recordMovement(ctx(warehouse, 'warehouse'), form({ type: 'DAMAGED', condition: 'defective', qty: '1', reason: 'Dented valve' })),
+    ).rejects.toThrow('full or empty');
+  });
+
   it('needs a reason for adjustments and refuses future dates', () => {
     const missingReason = movementFormSchema.safeParse({
       type: 'ADJUSTMENT',

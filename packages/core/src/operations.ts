@@ -3,15 +3,16 @@
  * checks permissions, saves its records in one transaction, and queues them
  * in the outbox for the server.
  */
-import { priceCart, productUnits, saleMovements, saleUnits, stockChanges, type CartLine } from './cart';
+import { isBorrowingSale, priceCart, productUnits, saleMovements, saleUnits, stockChanges, type CartLine } from './cart';
 import { ALLOW_NEGATIVE_STOCK } from './config';
 import { localDay, parseDay } from './dates';
-import { shortId, uuid } from './ids';
+import { claimCode, shortId, uuid } from './ids';
 import { levelOf, NO_STOCK, stockByProduct, type StockLevel } from './ledger';
 import type {
-  Borrower,
+  Customer,
   DeviceSettings,
   LoanEntry,
+  Location,
   MetaRecord,
   OutboxCollection,
   OutboxEntry,
@@ -24,6 +25,7 @@ import type {
   StockMovement,
   User,
 } from './models';
+import { CONDITION_LABELS } from './models';
 import { assertCan } from './roles';
 import { COLLECTIONS, put, remove, type ObservableStore, type StoreOp } from './store';
 import type { MovementInput } from './validation';
@@ -101,35 +103,41 @@ export function findShortages(
   return shortages;
 }
 
-/** Who a Borrowing-window sale is for: someone already on the list (id), or a new borrower. */
-export interface BorrowerRef {
+/** Who a sale is for: a customer already on the list (id), or a new one. */
+export interface CustomerRef {
   id?: string;
   name: string;
   phone?: string;
 }
 
-/** Finds the borrower, or makes a new one (refusing a second borrower with the same name). */
-async function resolveBorrower(ctx: OpContext, ref: BorrowerRef, now: string): Promise<{ borrower: Borrower; isNew: boolean }> {
-  const borrowers = await ctx.store.list<Borrower>('borrowers');
+/** Who a Borrowing-window sale is for. */
+export type BorrowerRef = CustomerRef;
+
+/** Names are kept tidy: no spaces at the ends, one space between words. */
+export const tidyName = (name: string) => name.trim().replace(/\s+/g, ' ');
+
+/** Finds the customer, or makes a new one (refusing a second customer with the same name). */
+export async function resolveCustomer(ctx: OpContext, ref: CustomerRef, now: string): Promise<{ customer: Customer; isNew: boolean }> {
+  const customers = await ctx.store.list<Customer>('borrowers');
   if (ref.id) {
-    const borrower = borrowers.find((b) => b.id === ref.id);
-    if (!borrower) throw new Error('That borrower is no longer on the list.');
-    return { borrower, isNew: false };
+    const customer = customers.find((c) => c.id === ref.id);
+    if (!customer) throw new Error('That customer is no longer on the list.');
+    return { customer, isNew: false };
   }
-  const name = ref.name.trim().replace(/\s+/g, ' ');
-  if (name.length < 2) throw new Error("Enter the borrower's name.");
-  if (borrowers.some((b) => b.name.toLowerCase() === name.toLowerCase())) {
-    throw new Error(`${name} is already on the list of borrowers. Choose them instead of adding them again.`);
+  const name = tidyName(ref.name);
+  if (name.length < 2) throw new Error("Enter the customer's name.");
+  if (customers.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
+    throw new Error(`${name} is already on the list of customers. Choose them instead of adding them again.`);
   }
   const phone = ref.phone?.trim();
-  const borrower: Borrower = { id: uuid(), name, ...(phone ? { phone } : {}), createdAt: now, receivedAt: null };
-  return { borrower, isNew: true };
+  const customer: Customer = { id: uuid(), name, ...(phone ? { phone } : {}), createdAt: now, receivedAt: null };
+  return { customer, isNew: true };
 }
 
 export function loanEntry(
   ctx: OpContext,
   user: User,
-  borrower: Pick<Borrower, 'id' | 'name'>,
+  borrower: Pick<Customer, 'id' | 'name'>,
   fields: Pick<LoanEntry, 'kind' | 'amount'> & Partial<LoanEntry>,
   now: string,
 ): LoanEntry {
@@ -162,45 +170,84 @@ export async function checkSlipNo(ctx: OpContext, slipNo: string): Promise<void>
   if (entered) throw new Error(`Receipt no. ${slipNo} was already entered as sale ${entered.receiptNo}. Check the number on the receipt.`);
 }
 
+/** Checks a discount the cashier typed: a percentage from just above 0 to 100, or a price of zero or more. */
+function checkDiscount(line: CartLine): void {
+  const discount = line.discount;
+  if (!discount) return;
+  const ok =
+    discount.kind === 'percent'
+      ? Number.isFinite(discount.percent) && discount.percent > 0 && discount.percent <= 100
+      : Number.isInteger(discount.price) && discount.price >= 0;
+  if (!ok) throw new Error('One of the discounts is not a valid amount.');
+}
+
+export interface SaleInput {
+  cart: CartLine[];
+  payment: Payment;
+  /** The customer the sale is for. Required on account, when lending a cylinder, and for prepaid orders. */
+  customer?: CustomerRef;
+  /** The number of the handwritten receipt the cart was scanned from. */
+  slipNo?: string;
+  /** Paid now and picked up later (Claims window): no stock leaves the shelf yet. */
+  prepaid?: boolean;
+  /** Sales on credit: the part the customer pays now. The rest goes on their account. */
+  downPayment?: Payment;
+}
+
 /**
- * Records a sale. Sales from the Borrowing window also name the borrower: a
- * payment 'on account' adds the total to what they owe, and each borrowed
- * cylinder is noted until it comes back. A sale scanned from a handwritten
- * receipt keeps the receipt's number (`slipNo`), and the same number can't be
- * entered twice at one branch.
+ * Records a sale. A sale can name its customer: their standing discount is
+ * applied, and the sale shows in their history. Sales from the Borrowing
+ * window always name one: a payment 'on account' adds the total to what they
+ * owe, and each borrowed cylinder is noted until it comes back. A prepaid
+ * order is paid now and its stock leaves the shelf when it is picked up. A sale
+ * scanned from a handwritten receipt keeps the receipt's number (`slipNo`), and
+ * the same number can't be entered twice at one branch.
  */
-export async function recordSale(
-  ctx: OpContext,
-  input: { cart: CartLine[]; payment: Payment; borrower?: BorrowerRef; slipNo?: string },
-): Promise<Sale> {
+export async function recordSale(ctx: OpContext, input: SaleInput): Promise<Sale> {
   const user = ctx.user;
   assertCan(user, 'pos.sell');
   if (input.cart.length === 0) throw new Error('The cart is empty.');
   const slipNo = input.slipNo?.trim() || undefined;
   const onAccount = input.payment.method === 'credit';
   const lendsCylinder = input.cart.some((line) => line.type === 'borrow');
-  if ((onAccount || lendsCylinder) && !input.borrower) throw new Error('Choose who is borrowing.');
+  if ((onAccount || lendsCylinder) && !input.customer) throw new Error('Choose who is borrowing.');
   if (onAccount || lendsCylinder) assertCan(user, 'borrow.manage');
+  if (input.payment.method === 'cheque') throw new Error('Post-dated cheques are taken as payments in the Borrowing window.');
+  if (input.cart.some((line) => line.discount)) assertCan(user, 'pos.discount');
+  input.cart.forEach(checkDiscount);
+  const down = input.downPayment;
+  if (down) {
+    if (!onAccount) throw new Error('Only a sale on credit can be paid in part.');
+    if (down.method === 'credit' || down.method === 'cheque') throw new Error('Take a post-dated cheque with Record payment after the sale.');
+    if (!Number.isInteger(down.amount) || down.amount <= 0) throw new Error('Enter the amount paid now.');
+  }
+  if (input.prepaid) {
+    if (!input.customer) throw new Error('A prepaid order needs the name of the customer who will pick it up.');
+    if (onAccount || lendsCylinder) throw new Error('A prepaid order is paid in full now; it cannot go on account or lend a cylinder.');
+  }
 
   const [products, sets, movements] = await Promise.all([
     ctx.store.list<Product>('products'),
     ctx.store.list<ProductSet>('sets'),
     ctx.store.list<StockMovement>('movements'),
   ]);
+  const now = (ctx.now?.() ?? new Date()).toISOString();
+  const customer = input.customer ? await resolveCustomer(ctx, input.customer, now) : null;
   const byId = new Map(products.map((p) => [p.id, p]));
   const setsById = new Map(sets.map((s) => [s.id, s]));
-  const { lines, total } = priceCart(input.cart, byId, setsById);
+  const { lines, total } = priceCart(input.cart, byId, setsById, customer?.customer);
   if (input.payment.amount !== total) throw new Error('The payment does not match the cart total.');
+  if (down && down.amount >= total) throw new Error('The amount paid now must be less than the total. A sale paid in full is made in the Sell window.');
 
-  if (!ALLOW_NEGATIVE_STOCK) {
+  // A prepaid order's stock is checked when it is picked up.
+  if (!ALLOW_NEGATIVE_STOCK && !input.prepaid) {
     const shortages = findShortages(input.cart, byId, stockByProduct(movements, ctx.locationId), setsById);
     if (shortages.length > 0) throw new StockError(shortages);
   }
 
   if (slipNo) await checkSlipNo(ctx, slipNo);
 
-  const now = (ctx.now?.() ?? new Date()).toISOString();
-  const borrower = input.borrower ? await resolveBorrower(ctx, input.borrower, now) : null;
+  const borrower = customer ? { borrower: customer.customer, isNew: customer.isNew } : null;
   const seq = ((await ctx.store.get<MetaRecord<number>>('meta', RECEIPT_SEQ_ID))?.value ?? 0) + 1;
   const sale: Sale = {
     id: uuid(),
@@ -211,16 +258,21 @@ export async function recordSale(
     lines,
     total,
     payment: input.payment,
+    ...(down ? { downPayment: down } : {}),
     status: 'completed',
     ...(borrower ? { borrowerId: borrower.borrower.id, borrowerName: borrower.borrower.name } : {}),
     ...(slipNo ? { slipNo } : {}),
+    ...(input.prepaid ? { prepaid: true, claimCode: claimCode() } : {}),
     createdAt: now,
     receivedAt: null,
   };
 
   const loans: LoanEntry[] = [];
-  if (borrower) {
+  if (borrower && isBorrowingSale(sale)) {
     if (onAccount) loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'credit', amount: total, saleId: sale.id }, now));
+    if (onAccount && down) {
+      loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'payment', amount: -down.amount, payment: down, saleId: sale.id }, now));
+    }
     for (const unit of saleUnits(sale)) {
       if (unit.type !== 'borrow') continue;
       loans.push(
@@ -242,7 +294,6 @@ export async function recordSale(
 function signFor(input: MovementInput): 1 | -1 {
   switch (input.type) {
     case 'DELIVERY_IN':
-    case 'TRANSFER_IN':
       return 1;
     case 'ADJUSTMENT':
       return input.direction === 'add' ? 1 : -1;
@@ -251,23 +302,34 @@ function signFor(input: MovementInput): 1 | -1 {
   }
 }
 
-export async function recordMovement(ctx: OpContext, input: MovementInput): Promise<StockMovement> {
+/**
+ * Records a stock change made by hand. Marking stock as defective moves it out of
+ * the full, empty or in-stock count and into the defective count. Stocks Out
+ * leaves this branch now and waits at the other one until it is accepted there
+ * (acceptTransfer in transfers.ts).
+ */
+export async function recordMovement(ctx: OpContext, input: MovementInput): Promise<StockMovement[]> {
   const user = ctx.user;
   assertCan(user, 'inventory.record');
   const product = await ctx.store.get<Product>('products', input.productId);
   if (!product) throw new Error('That product no longer exists.');
-  if ((input.type === 'TRANSFER_IN' || input.type === 'TRANSFER_OUT') && input.counterpartLocationId === ctx.locationId) {
-    throw new Error('Choose a different branch or warehouse for Stocks In or Stocks Out.');
+  if (input.type === 'TRANSFER_OUT') {
+    if (input.counterpartLocationId === ctx.locationId) throw new Error('Choose a different branch or warehouse for Stocks Out.');
+    if (!(await ctx.store.get<Location>('locations', input.counterpartLocationId))) throw new Error('Choose the branch or warehouse it is sent to.');
   }
 
-  const condition = product.kind === 'accessory' ? 'unit' : input.condition === 'unit' ? 'full' : input.condition;
+  // Accessories are counted as units or defective; cylinders as full, empty or defective.
+  const condition: StockCondition =
+    input.condition === 'defective' ? 'defective' : product.kind === 'accessory' ? 'unit' : input.condition === 'unit' ? 'full' : input.condition;
+  if (condition === 'defective' && input.type === 'DELIVERY_IN') throw new Error('Stock from the depot comes in good condition.');
+  if (condition === 'defective' && input.type === 'DAMAGED') throw new Error('Choose whether the defective stock was full or empty.');
   const qty = signFor(input) * input.qty;
 
   if (qty < 0 && !ALLOW_NEGATIVE_STOCK) {
     const levels = stockByProduct(await ctx.store.list<StockMovement>('movements'), ctx.locationId);
     const available = levelOf(levels, product.id)[condition];
     if (available + qty < 0) {
-      throw new StockError([{ productId: product.id, condition, name: `${product.name} (${condition})`, available, needed: -qty }]);
+      throw new StockError([{ productId: product.id, condition, name: `${product.name} (${CONDITION_LABELS[condition].toLowerCase()})`, available, needed: -qty }]);
     }
   }
 
@@ -277,23 +339,25 @@ export async function recordMovement(ctx: OpContext, input: MovementInput): Prom
   const occurredAt =
     input.day === localDay(nowDate) ? now : new Date(parseDay(input.day).getTime() + 12 * 3_600_000).toISOString();
 
-  const movement: StockMovement = {
-    id: uuid(),
+  const movement = (as: StockCondition, change: number, id = uuid()): StockMovement => ({
+    id,
     type: input.type,
     productId: product.id,
     locationId: ctx.locationId,
-    condition,
-    qty,
+    condition: as,
+    qty: change,
     reason: input.reason || undefined,
     counterpartLocationId: input.counterpartLocationId || undefined,
+    ...(input.type === 'TRANSFER_OUT' ? { transferId: id } : {}),
     userId: user.id,
     deviceId: ctx.deviceId,
     occurredAt,
     createdAt: now,
     receivedAt: null,
-  };
-  await ctx.store.batch(saveAndQueue('movements', [movement], now));
-  return movement;
+  });
+  const movements = input.type === 'DAMAGED' ? [movement(condition, qty), movement('defective', -qty)] : [movement(condition, qty)];
+  await ctx.store.batch(saveAndQueue('movements', movements, now));
+  return movements;
 }
 
 /**
@@ -307,10 +371,27 @@ export async function voidSale(ctx: OpContext, saleId: string, reason: string): 
   const sale = await ctx.store.get<Sale>('sales', saleId);
   if (!sale) throw new Error('Sale not found.');
   if (sale.status === 'voided') throw new Error('This sale is already voided.');
-
   const now = (ctx.now?.() ?? new Date()).toISOString();
+  const { voided, ops } = await voidSaleOps(ctx, user, sale, reason, now);
+  await ctx.store.batch(ops);
+  return voided;
+}
+
+/**
+ * The records that void a sale, for saving in one batch with anything else
+ * (an approved return that gives everything back voids its sale). Every stock
+ * movement the sale made is reversed: the sale itself, pick ups and earlier
+ * returns, so the shelf ends up as if the sale never happened.
+ */
+export async function voidSaleOps(
+  ctx: OpContext,
+  user: User,
+  sale: Sale,
+  reason: string,
+  now: string,
+): Promise<{ voided: Sale; ops: StoreOp[] }> {
   const reversals: StockMovement[] = (await ctx.store.list<StockMovement>('movements'))
-    .filter((m) => m.saleId === sale.id && m.type !== 'VOID_REVERSAL')
+    .filter((m) => m.saleId === sale.id && m.type !== 'VOID_REVERSAL' && m.type !== 'DEFECTIVE_EXCHANGE')
     .map((m) => ({
       ...m,
       id: uuid(),
@@ -329,7 +410,8 @@ export async function voidSale(ctx: OpContext, saleId: string, reason: string): 
     const theirs = (await ctx.store.list<LoanEntry>('loans')).filter((e) => e.borrowerId === sale.borrowerId);
     const reversed = new Set(theirs.map((e) => e.reverses));
     for (const entry of theirs) {
-      if (entry.saleId !== sale.id || reversed.has(entry.id) || (entry.kind !== 'credit' && entry.kind !== 'cylinder_out')) continue;
+      // The part paid when a sale on credit was made is given back with it.
+      if (entry.saleId !== sale.id || reversed.has(entry.id) || (entry.kind !== 'credit' && entry.kind !== 'cylinder_out' && entry.kind !== 'payment')) continue;
       if (entry.kind === 'cylinder_out') {
         const stillOut = theirs.filter((e) => e.productId === entry.productId).reduce((sum, e) => sum + (e.qty ?? 0), 0);
         if (stillOut < (entry.qty ?? 0)) {
@@ -356,13 +438,10 @@ export async function voidSale(ctx: OpContext, saleId: string, reason: string): 
     }
   }
   const voided: Sale = { ...sale, status: 'voided', voidReason: reason, voidedBy: user.id, voidedAt: now, receivedAt: null };
-
-  await ctx.store.batch([
-    ...saveAndQueue('sales', [voided], now),
-    ...saveAndQueue('movements', reversals, now),
-    ...saveAndQueue('loans', loanReversals, now),
-  ]);
-  return voided;
+  return {
+    voided,
+    ops: [...saveAndQueue('sales', [voided], now), ...saveAndQueue('movements', reversals, now), ...saveAndQueue('loans', loanReversals, now)],
+  };
 }
 
 const DEVICE_SETTINGS_ID = 'device-settings';

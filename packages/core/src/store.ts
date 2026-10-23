@@ -9,6 +9,7 @@ export type Collection =
   | 'sales'
   | 'borrowers'
   | 'loans'
+  | 'claims'
   | 'outbox'
   | 'meta';
 
@@ -21,6 +22,7 @@ export const COLLECTIONS: readonly Collection[] = [
   'sales',
   'borrowers',
   'loans',
+  'claims',
   'outbox',
   'meta',
 ];

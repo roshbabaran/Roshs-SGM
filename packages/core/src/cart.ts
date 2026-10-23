@@ -1,7 +1,11 @@
 import { NEW_SALE_TAKES_EMPTY } from './config';
 import { uuid } from './ids';
 import type {
+  Customer,
+  Discount,
+  LineDiscount,
   MovementType,
+  NestedSet,
   Product,
   ProductLineType,
   ProductSaleLine,
@@ -9,21 +13,25 @@ import type {
   Sale,
   SaleLine,
   SaleLineType,
+  SetItem,
   StockCondition,
   StockMovement,
 } from './models';
-import type { Centavos } from './money';
+import { formatPeso, type Centavos } from './money';
 
 export interface ProductCartLine {
   type: ProductLineType;
   productId: string;
   qty: number;
+  /** A discount the cashier gave at the counter (needs pos.discount). It wins over the customer's own discount. */
+  discount?: Discount;
 }
 
 export interface SetCartLine {
   type: 'set';
   setId: string;
   qty: number;
+  discount?: Discount;
 }
 
 /** One line of the sale being made: a product sold one way, or a set. */
@@ -57,6 +65,70 @@ export function contentPrice(product: Product): Centavos | undefined {
   return product.refillPrice;
 }
 
+/**
+ * Everything a set contains, with the sets inside it opened up into their
+ * products. The same product sold the same way is added up into one item.
+ */
+export function setContents(set: Pick<ProductSet, 'items' | 'sets'> & { id?: string }, sets: Map<string, ProductSet>): SetItem[] {
+  const totals = new Map<string, SetItem>();
+  const add = (items: SetItem[], times: number) => {
+    for (const item of items) {
+      const key = `${item.productId}:${item.type}`;
+      const current = totals.get(key);
+      totals.set(key, { ...item, qty: (current?.qty ?? 0) + item.qty * times });
+    }
+  };
+  const open = (current: Pick<ProductSet, 'items' | 'sets'>, times: number, inside: Set<string>) => {
+    add(current.items, times);
+    for (const nested of current.sets ?? []) {
+      const child = sets.get(nested.setId);
+      // A set that is missing, or that would contain itself, adds nothing.
+      if (!child || inside.has(child.id)) continue;
+      open(child, times * nested.qty, new Set([...inside, child.id]));
+    }
+  };
+  open(set, 1, new Set(set.id ? [set.id] : []));
+  return Array.from(totals.values());
+}
+
+/** The sets inside a set, by name: "1 × Starter kit 11 kg". */
+export function nestedSetNames(nested: NestedSet[] | undefined, sets: Map<string, ProductSet>): string[] {
+  return (nested ?? []).map((n) => `${n.qty} × ${sets.get(n.setId)?.name ?? 'Missing set'}`);
+}
+
+/** The key a customer's own price is kept under: "productId:refill", "productId:item" or "set:setId". */
+export function discountKey(line: Pick<ProductCartLine, 'type' | 'productId'> | Pick<SetCartLine, 'type' | 'setId'>): string {
+  if (line.type === 'set') return `set:${line.setId}`;
+  return `${line.productId}:${line.type === 'borrow' ? 'refill' : line.type}`;
+}
+
+/** The customer's standing discount for this line: their own price for it, otherwise their percentage. */
+export function customerDiscountFor(
+  customer: Pick<Customer, 'discount'> | null | undefined,
+  line: Pick<ProductCartLine, 'type' | 'productId'> | Pick<SetCartLine, 'type' | 'setId'>,
+): Discount | undefined {
+  const price = customer?.discount?.prices?.[discountKey(line)];
+  if (price !== undefined) return { kind: 'price', price };
+  const percent = customer?.discount?.percent;
+  return percent ? { kind: 'percent', percent } : undefined;
+}
+
+/** One unit's price after a discount, in whole centavos, never more than the regular price. */
+export function discountedPrice(regular: Centavos, discount: Discount): Centavos {
+  const price = discount.kind === 'percent' ? Math.round((regular * (100 - discount.percent)) / 100) : discount.price;
+  return Math.max(0, Math.min(regular, price));
+}
+
+/** "10% off" or "₱900.00 each" */
+export function discountLabel(discount: Discount): string {
+  return discount.kind === 'percent' ? `${+discount.percent.toFixed(2)}% off` : `${formatPeso(discount.price)} each`;
+}
+
+/** How much a priced line was discounted in all. */
+export function lineDiscountAmount(line: Pick<SaleLine, 'regularPrice' | 'unitPrice' | 'qty'>): Centavos {
+  return line.regularPrice === undefined ? 0 : (line.regularPrice - line.unitPrice) * line.qty;
+}
+
 function addLine(cart: CartLine[], line: CartLine): CartLine[] {
   const key = cartLineKey(line);
   const index = cart.findIndex((l) => cartLineKey(l) === key);
@@ -70,6 +142,15 @@ export function addToCart(cart: CartLine[], product: Product, type = defaultLine
 
 export function addSetToCart(cart: CartLine[], set: ProductSet): CartLine[] {
   return addLine(cart, { type: 'set', setId: set.id, qty: 1 });
+}
+
+/** Gives a line a discount at the counter, or takes it away (undefined). */
+export function changeDiscount(cart: CartLine[], index: number, discount: Discount | undefined): CartLine[] {
+  return cart.map((line, i) => {
+    if (i !== index) return line;
+    const { discount: _old, ...rest } = line;
+    return discount ? { ...rest, discount } : rest;
+  });
 }
 
 /** Sets a line's quantity; zero or less removes the line. */
@@ -95,60 +176,88 @@ function productFrom(products: Map<string, Product>, id: string): Product {
   return product;
 }
 
-function priceLine(line: CartLine, products: Map<string, Product>, sets: Map<string, ProductSet>): SaleLine {
+/** The price after the discount the cashier gave, or else the customer's own discount, and where it came from. */
+function applyDiscount(
+  line: CartLine,
+  regular: Centavos,
+  customer: Pick<Customer, 'discount'> | null | undefined,
+): { unitPrice: Centavos; regularPrice?: Centavos; discount?: LineDiscount } {
+  const fromCustomer = customerDiscountFor(customer, line);
+  const chosen: LineDiscount | undefined = line.discount
+    ? { ...line.discount, source: 'counter' }
+    : fromCustomer
+      ? { ...fromCustomer, source: 'customer' }
+      : undefined;
+  if (!chosen) return { unitPrice: regular };
+  const price = discountedPrice(regular, chosen);
+  return price < regular ? { unitPrice: price, regularPrice: regular, discount: chosen } : { unitPrice: regular };
+}
+
+function priceLine(
+  line: CartLine,
+  products: Map<string, Product>,
+  sets: Map<string, ProductSet>,
+  customer: Pick<Customer, 'discount'> | null | undefined,
+): SaleLine {
   if (line.type === 'set') {
     const set = sets.get(line.setId);
     if (!set) throw new Error(`Set not found: ${line.setId}`);
+    const price = applyDiscount(line, set.price, customer);
     return {
       type: 'set',
       setId: set.id,
       name: set.name,
       qty: line.qty,
-      unitPrice: set.price,
-      amount: set.price * line.qty,
-      items: set.items.map((item) => ({ ...item, name: productFrom(products, item.productId).name })),
+      ...price,
+      amount: price.unitPrice * line.qty,
+      items: setContents(set, sets).map((item) => ({ ...item, name: productFrom(products, item.productId).name })),
     };
   }
   const product = productFrom(products, line.productId);
-  const price = unitPrice(product, line.type);
+  const price = applyDiscount(line, unitPrice(product, line.type), customer);
   const priced: ProductSaleLine = {
     type: line.type,
     productId: product.id,
     name: product.name,
     qty: line.qty,
-    unitPrice: price,
-    amount: price * line.qty,
+    ...price,
+    amount: price.unitPrice * line.qty,
   };
   const content = line.type === 'new' ? contentPrice(product) : undefined;
   if (content !== undefined) priced.contentPrice = content;
   return priced;
 }
 
+/** Prices every line: the regular price, less the cashier's discount or else the customer's own discount. */
 export function priceCart(
   cart: CartLine[],
   products: Map<string, Product>,
   sets: Map<string, ProductSet> = new Map(),
+  customer?: Pick<Customer, 'discount'> | null,
 ): { lines: SaleLine[]; total: Centavos } {
-  const lines = cart.map((line) => priceLine(line, products, sets));
+  const lines = cart.map((line) => priceLine(line, products, sets, customer));
   return { lines, total: lines.reduce((sum, line) => sum + line.amount, 0) };
 }
 
 /** The cart with each set opened up into the products it contains. */
 export function productUnits(cart: CartLine[], sets: Map<string, ProductSet> = new Map()): ProductCartLine[] {
   return cart.flatMap((line): ProductCartLine[] => {
-    if (line.type !== 'set') return [line];
+    if (line.type !== 'set') return [{ type: line.type, productId: line.productId, qty: line.qty }];
     const set = sets.get(line.setId);
-    return set ? set.items.map((item) => ({ type: item.type, productId: item.productId, qty: item.qty * line.qty })) : [];
+    return set ? setContents(set, sets).map((item) => ({ type: item.type, productId: item.productId, qty: item.qty * line.qty })) : [];
   });
+}
+
+/** One sale line's products, for `qty` of it (a set opens up into what it contained when sold). */
+export function lineUnits(line: SaleLine, qty = line.qty): ProductCartLine[] {
+  return line.type === 'set'
+    ? line.items.map((item) => ({ type: item.type, productId: item.productId, qty: item.qty * qty }))
+    : [{ type: line.type, productId: line.productId, qty }];
 }
 
 /** A sale's lines with each set opened up into the products it contained. */
 export function saleUnits(sale: Pick<Sale, 'lines'>): ProductCartLine[] {
-  return sale.lines.flatMap((line): ProductCartLine[] =>
-    line.type === 'set'
-      ? line.items.map((item) => ({ type: item.type, productId: item.productId, qty: item.qty * line.qty }))
-      : [{ type: line.type, productId: line.productId, qty: line.qty }],
-  );
+  return sale.lines.flatMap((line) => lineUnits(line));
 }
 
 /** Sellable units the cart needs per product (full cylinders, or accessory units). */
@@ -185,7 +294,14 @@ export function stockChanges(unit: ProductCartLine): StockChange[] {
   }
 }
 
+/** A sale made in the Borrowing window: on the customer's account, or lending a cylinder. */
+export function isBorrowingSale(sale: Pick<Sale, 'lines' | 'payment'>): boolean {
+  return sale.payment.method === 'credit' || sale.lines.some((line) => line.type === 'borrow');
+}
+
+/** The stock a sale takes off the shelf. A prepaid order takes none until it is picked up (claims.ts). */
 export function saleMovements(sale: Sale, userId: string): StockMovement[] {
+  if (sale.prepaid) return [];
   const base = {
     locationId: sale.locationId,
     saleId: sale.id,
@@ -194,7 +310,7 @@ export function saleMovements(sale: Sale, userId: string): StockMovement[] {
     occurredAt: sale.createdAt,
     createdAt: sale.createdAt,
     receivedAt: null,
-    ...(sale.borrowerName ? { reason: `Borrowing: ${sale.borrowerName}` } : {}),
+    ...(sale.borrowerName ? { reason: `${isBorrowingSale(sale) ? 'Borrowing' : 'Customer'}: ${sale.borrowerName}` } : {}),
   };
   return saleUnits(sale).flatMap((unit) =>
     stockChanges(unit).map((change) => ({ ...base, id: uuid(), productId: unit.productId, ...change })),

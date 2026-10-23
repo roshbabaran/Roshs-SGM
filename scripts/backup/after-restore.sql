@@ -13,3 +13,6 @@ where s.id = 1 and r.collection = n.collection and r.id = n.id;
 update sgm.sync_state set last_seq = coalesce((select max(seq) from sgm.records), last_seq + 50000) where id = 1;
 
 select setval('sgm.sync_seq', last_seq) from sgm.sync_state where id = 1;
+
+-- A backup made before SGM 1.1.0 has no device locations (supabase/upgrade-1.1.0.sql).
+alter table sgm.devices add column if not exists location_id text;

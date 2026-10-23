@@ -5,7 +5,7 @@ create extension if not exists pgcrypto with schema extensions;
 
 -- Every synced record, in the same shape as the "records" table on each device.
 create table sgm.records (
-  collection  text not null,          -- products, sets, locations, users, sales, movements, borrowers, loans
+  collection  text not null,          -- products, sets, locations, users, sales, movements, borrowers, loans, claims
   id          text not null,
   doc         jsonb not null,         -- the record exactly as the apps use it (packages/core/src/models.ts)
   seq         bigint not null,        -- sync order: GET /sync/pull?cursor=N returns seq > N
@@ -28,11 +28,13 @@ create table sgm.logins (
   failed_logins int not null default 0
 );
 
--- Every PC and phone that has tried to sign in. The owner approves each one once.
+-- Every PC and phone that has tried to sign in, or was added in Users & Devices. The owner or an admin approves
+-- each one once.
 create table sgm.devices (
   id            text primary key,
   label         text,
   approved      boolean not null default false,
+  location_id   text,                  -- the branch or warehouse it is used at, for finding it in the list
   first_seen_at timestamptz not null default now(),
   last_seen_at  timestamptz,
   last_user_id  text
@@ -80,7 +82,7 @@ declare
   v_id text := coalesce((select user_id from sgm.logins where username = lower(trim(p_username))), gen_random_uuid()::text);
   v_unknown text;
 begin
-  if p_role not in ('owner', 'employee', 'warehouse') then raise exception 'Role must be owner, employee or warehouse'; end if;
+  if p_role not in ('owner', 'admin', 'manager', 'employee', 'warehouse') then raise exception 'Role must be owner, admin, manager, employee or warehouse'; end if;
   if p_pin !~ '^[0-9]{4,8}$' then raise exception 'PIN must be 4 to 8 digits'; end if;
   select string_agg(l, ', ') into v_unknown from unnest(p_locations) l
   where not exists (select 1 from sgm.records r where r.collection = 'locations' and r.id = l);
@@ -96,8 +98,9 @@ begin
   return v_id;
 end $$;
 
--- Gives someone permissions beyond their role, for example backups.manage to make them an admin who can make
--- and open backups on SGM Desk. Pass the whole list each time; an empty array takes them all away.
+-- Gives someone permissions beyond their role, for example reports.view so an employee can see reports. Pass the
+-- whole list each time; an empty array takes them all away. Users & Devices does the same. Backups stay the owner's
+-- and admins', and accepting stock from other branches stays with the roles that have it.
 create function sgm.set_extra_permissions(p_username text, p_permissions text[]) returns void language plpgsql set search_path = '' as $$
 declare
   v_doc jsonb;
@@ -105,9 +108,15 @@ declare
 begin
   -- PERMISSIONS in packages/core/src/roles.ts. Keep them in step.
   select string_agg(p, ', ') into v_unknown from unnest(p_permissions) p
-  where p not in ('dashboard.view', 'pos.sell', 'borrow.manage', 'sales.view', 'sales.void', 'inventory.view',
-                  'inventory.record', 'reports.view', 'products.manage', 'users.manage', 'settings.device', 'backups.manage');
+  where p not in ('dashboard.view', 'pos.sell', 'pos.discount', 'borrow.manage', 'cheques.manage', 'claims.approve',
+                  'sales.view', 'sales.void', 'inventory.view', 'inventory.record', 'inventory.receive', 'reports.view',
+                  'products.manage', 'users.manage', 'settings.device', 'backups.manage');
   if v_unknown is not null then raise exception 'Unknown permission: %', v_unknown; end if;
+  -- ROLE_ONLY in roles.ts: these come only with a role. Backups hold every sale and loan.
+  if 'backups.manage' = any(p_permissions) then raise exception 'Only the owner and admins make and open backups'; end if;
+  if 'inventory.receive' = any(p_permissions) then
+    raise exception 'Only the owner, admins, branch managers and warehouse staff accept stock from other branches';
+  end if;
   select r.doc into v_doc from sgm.records r join sgm.logins l on l.user_id = r.id
   where r.collection = 'users' and l.username = lower(trim(p_username));
   if v_doc is null then raise exception 'No user named %', p_username; end if;

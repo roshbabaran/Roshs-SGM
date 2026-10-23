@@ -4,9 +4,11 @@ export interface StockLevel {
   full: number;
   empty: number;
   unit: number;
+  /** Defective cylinders or accessories waiting to go back to the depot. */
+  defective: number;
 }
 
-export const NO_STOCK: StockLevel = { full: 0, empty: 0, unit: 0 };
+export const NO_STOCK: StockLevel = { full: 0, empty: 0, unit: 0, defective: 0 };
 
 /** Adds up every movement at one branch or warehouse into stock per product. */
 export function stockByProduct(movements: StockMovement[], locationId: string): Map<string, StockLevel> {
@@ -14,6 +16,8 @@ export function stockByProduct(movements: StockMovement[], locationId: string): 
   for (const movement of movements) {
     if (movement.locationId !== locationId) continue;
     const level = levels.get(movement.productId) ?? { ...NO_STOCK };
+    // A condition from a newer version of the app is left out rather than spoiling the count.
+    if (!(movement.condition in level)) continue;
     level[movement.condition] += movement.qty;
     levels.set(movement.productId, level);
   }
@@ -57,10 +61,8 @@ export interface MovementRow extends LevelChange {
 /** A refill's empty coming in goes on the same line as the full going out. */
 const rowType = (type: MovementType): MovementType => (type === 'EMPTY_IN' ? 'SALE' : type);
 
-const plus = (level: StockLevel, movement: StockMovement): StockLevel => ({
-  ...level,
-  [movement.condition]: level[movement.condition] + movement.qty,
-});
+const plus = (level: StockLevel, movement: StockMovement): StockLevel =>
+  movement.condition in level ? { ...level, [movement.condition]: level[movement.condition] + movement.qty } : level;
 
 /**
  * Movement history at one branch or warehouse, oldest first. The movements that
@@ -116,6 +118,7 @@ export function movementRows(movements: StockMovement[], locationId: string): Mo
         full: before.full + row.change.full,
         empty: before.empty + row.change.empty,
         unit: before.unit + row.change.unit,
+        defective: before.defective + row.change.defective,
       };
       running.set(row.productId, after);
       return { ...row, before, after };

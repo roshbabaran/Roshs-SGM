@@ -17,7 +17,12 @@ export interface SyncStatus {
 }
 
 const PUSH_BATCH_SIZE = 50;
-const CURSOR_ID = 'sync-cursor';
+/**
+ * Where the pull got up to. Renamed in 1.1.0, so a device updated from 1.0 pulls
+ * everything once more: the server leaves Claims records out for 1.0, which
+ * can't store them.
+ */
+const CURSOR_ID = 'sync-cursor-1.1';
 
 type Listener = (status: SyncStatus) => void;
 
@@ -39,6 +44,8 @@ export class SyncEngine {
       store: ObservableStore;
       api: ApiClient;
       getToken: () => string | null;
+      /** The server turned the token down: the account was disabled or the token ran out. */
+      onAuthError?: () => void;
       intervalMs?: number;
       now?: () => Date;
     },
@@ -125,6 +132,7 @@ export class SyncEngine {
       if (error instanceof ApiError && error.kind === 'network') {
         this.update({ state: 'offline', message: 'Working offline. Changes will sync when the connection is back.' });
       } else {
+        if (error instanceof ApiError && error.kind === 'auth') this.deps.onAuthError?.();
         this.update({ state: 'error', message: error instanceof Error ? error.message : String(error) });
       }
     }

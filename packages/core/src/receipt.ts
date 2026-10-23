@@ -1,4 +1,4 @@
-import { LINE_TYPE_LABELS } from './cart';
+import { discountLabel, LINE_TYPE_LABELS } from './cart';
 import { BUSINESS, RECEIPT_FOOTER } from './config';
 import { formatDateTime } from './dates';
 import { PAYMENT_LABELS, type Sale, type SaleLine, type SaleLineType } from './models';
@@ -24,12 +24,16 @@ export interface Receipt {
   dateTime: string;
   locationName: string;
   cashierName: string;
-  /** The borrower, for sales made in the Borrowing window. */
+  /** The customer the sale was for (always there for Borrowing-window sales and prepaid orders). */
   customer?: string;
+  /** Prepaid orders: the code to show when picking up. */
+  claimCode?: string;
   lines: ReceiptLine[];
   total: string;
   /** Put on the customer's account: nothing was paid now, so there is no change. */
   onAccount: boolean;
+  /** Sales on credit: the part paid now, and what is left on account. */
+  paidNow?: { label: string; amount: string; reference?: string; balance: string };
   paymentLabel: string;
   tendered: string;
   change: string;
@@ -44,30 +48,45 @@ export type PaperWidth = 58 | 80;
 
 const typeNote = (type: SaleLineType) => (type === 'item' ? '' : ` (${LINE_TYPE_LABELS[type].toLowerCase()})`);
 
-/** A sale line as printed. A new cylinder shows the cylinder and its content separately; a set lists what it contains. */
+/** The discount row under a discounted line: "Less 10% off" and what it took off. */
+function discountRows(line: SaleLine): ReceiptRow[] {
+  if (line.regularPrice === undefined || !line.discount) return [];
+  const off = (line.regularPrice - line.unitPrice) * line.qty;
+  const label = line.discount.kind === 'percent' ? discountLabel(line.discount) : `price ${formatPeso(line.unitPrice)} each`;
+  return [{ detail: `Less discount (${label})`, amount: `-${formatPeso(off)}` }];
+}
+
+/**
+ * A sale line as printed, at its regular price with any discount on a row of
+ * its own. A new cylinder shows the cylinder and its content separately; a set
+ * lists what it contains.
+ */
 export function receiptLine(line: SaleLine): ReceiptLine {
+  const regular = line.regularPrice ?? line.unitPrice;
   if (line.type === 'set') {
     return {
       name: `${line.name} (set)`,
       rows: [
-        { detail: `${line.qty} x ${formatPeso(line.unitPrice)}`, amount: formatPeso(line.amount) },
+        { detail: `${line.qty} x ${formatPeso(regular)}`, amount: formatPeso(regular * line.qty) },
+        ...discountRows(line),
         ...line.items.map((item) => ({ detail: `- ${item.qty * line.qty} x ${item.name}${typeNote(item.type)}`, amount: '' })),
       ],
     };
   }
   if (line.type === 'new' && line.contentPrice !== undefined) {
-    const cylinder = line.unitPrice - line.contentPrice;
+    const cylinder = regular - line.contentPrice;
     return {
       name: `${line.name} (new cylinder)`,
       rows: [
         { detail: `Cylinder ${line.qty} x ${formatPeso(cylinder)}`, amount: formatPeso(cylinder * line.qty) },
         { detail: `Content ${line.qty} x ${formatPeso(line.contentPrice)}`, amount: formatPeso(line.contentPrice * line.qty) },
+        ...discountRows(line),
       ],
     };
   }
   return {
     name: line.name,
-    rows: [{ detail: `${line.qty} x ${formatPeso(line.unitPrice)}${typeNote(line.type)}`, amount: formatPeso(line.amount) }],
+    rows: [{ detail: `${line.qty} x ${formatPeso(regular)}${typeNote(line.type)}`, amount: formatPeso(regular * line.qty) }, ...discountRows(line)],
   };
 }
 
@@ -82,6 +101,7 @@ export function buildReceipt(sale: Sale, names: { locationName: string; cashierN
     locationName: names.locationName,
     cashierName: names.cashierName,
     customer: sale.borrowerName,
+    ...(sale.claimCode ? { claimCode: sale.claimCode } : {}),
     lines: sale.lines.map(receiptLine),
     total: formatPeso(sale.total),
     onAccount: sale.payment.method === 'credit',
@@ -89,7 +109,22 @@ export function buildReceipt(sale: Sale, names: { locationName: string; cashierN
     tendered: formatPeso(sale.payment.tendered),
     change: formatPeso(sale.payment.change),
     reference: sale.payment.reference,
-    notes: borrowed.map((line) => `Borrowed cylinder: ${line.qty} x ${line.name}. Please return it.`),
+    ...(sale.downPayment
+      ? {
+          paidNow: {
+            label: PAYMENT_LABELS[sale.downPayment.method],
+            amount: formatPeso(sale.downPayment.amount),
+            reference: sale.downPayment.reference,
+            balance: formatPeso(sale.total - sale.downPayment.amount),
+          },
+        }
+      : {}),
+    notes: [
+      ...(sale.prepaid
+        ? [`PREPAID ORDER. Pick up at ${names.locationName} with this receipt. Claim code: ${sale.claimCode ?? ''}`]
+        : []),
+      ...borrowed.map((line) => `Borrowed cylinder: ${line.qty} x ${line.name}. Please return it.`),
+    ],
     footer: RECEIPT_FOOTER,
     voided: sale.status === 'voided',
   };
@@ -97,6 +132,13 @@ export function buildReceipt(sale: Sale, names: { locationName: string; cashierN
 
 /** The payment rows under TOTAL: what was paid and the change, or the amount put on account. */
 export function paymentRows(receipt: Receipt): ReceiptRow[] {
+  if (receipt.onAccount && receipt.paidNow) {
+    return [
+      { detail: `Paid now (${receipt.paidNow.label})`, amount: receipt.paidNow.amount },
+      ...(receipt.paidNow.reference ? [{ detail: 'Ref no.', amount: receipt.paidNow.reference }] : []),
+      { detail: receipt.paymentLabel, amount: receipt.paidNow.balance },
+    ];
+  }
   if (receipt.onAccount) return [{ detail: receipt.paymentLabel, amount: receipt.total }];
   return [
     { detail: receipt.paymentLabel, amount: receipt.tendered },

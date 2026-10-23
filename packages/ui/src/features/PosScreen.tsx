@@ -4,10 +4,13 @@ import {
   ALLOW_NEGATIVE_STOCK,
   cartDemand,
   cartLineKey,
+  changeDiscount,
   changeQty,
   changeType,
   checkSlipNo,
+  describeDiscount,
   describeSet,
+  discountLabel,
   findShortages,
   formatPeso,
   isLowStock,
@@ -17,8 +20,12 @@ import {
   recordSale,
   regularPrice,
   sellable,
+  setContents,
   stockByProduct,
   type CartLine,
+  type Customer,
+  type CustomerRef,
+  type Discount,
   type Payment,
   type Product,
   type ProductKind,
@@ -30,10 +37,10 @@ import {
   type StockLevel,
   type StockMovement,
 } from '@sgm/core';
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
-import { Badge, Card, EmptyState, ScreenHeader, SegmentedControl } from '../Basics';
+import { Badge, Card, Checkbox, EmptyState, ScreenHeader, SegmentedControl } from '../Basics';
 import { Button } from '../Button';
 import { Icon } from '../Icon';
 import { useCollection, useServices, useWork } from '../services';
@@ -43,6 +50,8 @@ import { radius, spacing, useTheme } from '../theme';
 import { useToast } from '../Toast';
 import { useBreakpoint } from '../useBreakpoint';
 import { useKeyboardShortcuts } from '../useKeyboardShortcuts';
+import { CustomerField, CustomerPickerDialog } from './CustomerPicker';
+import { DiscountDialog } from './DiscountDialog';
 import { PaymentDialog } from './PaymentDialog';
 import { ReceiptScanDialog, type ScannedSale } from './ReceiptScanDialog';
 import { ReceiptDialog } from './receipts';
@@ -61,6 +70,8 @@ const MIN_CARD_WIDTH = 200;
 
 /**
  * The counter screen: pick products or sets, choose refill or new cylinder, take payment, print.
+ * A sale can name its customer (their standing discount applies), give a discount on a line
+ * (pos.discount), or be prepaid for picking up later in the Claims window.
  * Where the device can read receipts, a handwritten receipt can be scanned into the cart instead.
  */
 export function PosScreen() {
@@ -73,7 +84,13 @@ export function PosScreen() {
   const { data: products } = useCollection<Product>('products');
   const { data: sets } = useCollection<ProductSet>('sets');
   const { data: movements } = useCollection<StockMovement>('movements');
+  const { data: customers } = useCollection<Customer>('borrowers');
   const [cart, setCart] = useState<CartLine[]>([]);
+  const [customer, setCustomer] = useState<CustomerRef | null>(null);
+  const [choosingCustomer, setChoosingCustomer] = useState(false);
+  /** Paid now, picked up later in the Claims window. */
+  const [prepaid, setPrepaid] = useState(false);
+  const [discounting, setDiscounting] = useState<CartLine | null>(null);
   const [query, setQuery] = useState('');
   const [section, setSection] = useState<Section>('all');
   const [paying, setPaying] = useState(false);
@@ -88,11 +105,16 @@ export function PosScreen() {
   const cardWidth = gridWidth > 0 ? Math.floor((gridWidth - spacing.md * (columns - 1)) / columns) : MIN_CARD_WIDTH;
 
   const byId = new Map(products.map((p) => [p.id, p]));
-  // A set can be sold only while every product in it still exists.
-  const setsById = new Map(sets.filter((set) => set.items.every((item) => byId.has(item.productId))).map((set) => [set.id, set]));
+  const allSets = new Map(sets.map((set) => [set.id, set]));
+  // A set can be sold only while every product in it, and in the sets inside it, still exists.
+  const setsById = new Map(
+    sets.filter((set) => setContents(set, allSets).every((item) => byId.has(item.productId))).map((set) => [set.id, set]),
+  );
   const levels = stockByProduct(movements, work.locationId);
   const lines = cart.filter((line) => (line.type === 'set' ? setsById.has(line.setId) : byId.has(line.productId)));
-  const { lines: priced, total } = priceCart(lines, byId, setsById);
+  const customerRecord = customer?.id ? (customers.find((c) => c.id === customer.id) ?? null) : null;
+  const { lines: priced, total } = priceCart(lines, byId, setsById, customerRecord);
+  const canDiscount = work.can('pos.discount');
   const demand = cartDemand(productUnits(lines, setsById));
   const q = query.trim().toLowerCase();
   const shownProducts =
@@ -104,7 +126,8 @@ export function PosScreen() {
   const shownSets = section === 'set' ? Array.from(setsById.values()).filter((set) => set.active && (!q || set.name.toLowerCase().includes(q))) : [];
   const where = work.location?.name ?? 'this branch';
 
-  const shortagesOf = (next: CartLine[]): Shortage[] => (ALLOW_NEGATIVE_STOCK ? [] : findShortages(next, byId, levels, setsById));
+  // A prepaid order's stock is checked when it is picked up.
+  const shortagesOf = (next: CartLine[]): Shortage[] => (ALLOW_NEGATIVE_STOCK || prepaid ? [] : findShortages(next, byId, levels, setsById));
 
   /** The change this would make to the cart pushes some stock below zero, or null if it fits. */
   const newShortage = (next: CartLine[]): Shortage | null => {
@@ -129,6 +152,28 @@ export function PosScreen() {
     if (next.length === 0) setSlipNo(null);
   };
 
+  /** A new sale starts with no customer and not prepaid. */
+  const clearSale = () => {
+    replaceCart([]);
+    setCustomer(null);
+    setPrepaid(false);
+  };
+
+  const setDiscount = (line: CartLine, discount: Discount | undefined) => {
+    replaceCart(changeDiscount(lines, indexOf(line), discount));
+    setDiscounting(null);
+  };
+
+  /** Turning prepaid off checks the cart against the shelf again. */
+  const changePrepaid = (on: boolean) => {
+    if (!on && !ALLOW_NEGATIVE_STOCK) {
+      const shortage = findShortages(lines, byId, levels, setsById)[0];
+      if (shortage) return toast.show(`${stockMessage(shortage)} Keep it prepaid, or take it out of the cart.`, 'error');
+    }
+    setPrepaid(on);
+    if (on && !customer) setChoosingCustomer(true);
+  };
+
   const update = (next: CartLine[]) => {
     const shortage = newShortage(next);
     if (shortage) toast.show(stockMessage(shortage), 'error');
@@ -149,12 +194,18 @@ export function PosScreen() {
   const setType = (line: CartLine, type: ProductLineType) => update(changeType(lines, indexOf(line), type));
 
   const charge = () => {
-    if (lines.length > 0) setPaying(true);
+    if (lines.length === 0) return;
+    if (prepaid && !customer) {
+      toast.show('A prepaid order needs the name of the customer who will pick it up.', 'error');
+      setChoosingCustomer(true);
+      return;
+    }
+    setPaying(true);
   };
 
   const complete = async (payment: Payment) => {
-    const sale = await recordSale(work.ctx, { cart: lines, payment, slipNo: slipNo ?? undefined });
-    replaceCart([]);
+    const sale = await recordSale(work.ctx, { cart: lines, payment, slipNo: slipNo ?? undefined, customer: customer ?? undefined, prepaid });
+    clearSale();
     setPaying(false);
     setLastSale(sale);
   };
@@ -181,10 +232,10 @@ export function PosScreen() {
   useKeyboardShortcuts(
     {
       F2: () => searchRef.current?.focus(),
-      F4: () => replaceCart([]),
+      F4: clearSale,
       F9: charge,
     },
-    !paying && !lastSale && !scanning,
+    !paying && !lastSale && !scanning && !choosingCustomer && !discounting,
   );
 
   const catalog = (
@@ -217,6 +268,7 @@ export function PosScreen() {
             onPress={() => add(product)}
             row={!isWide}
             width={cardWidth}
+            prepaid={prepaid}
           />
         ))}
         {shownSets.map((set) => (
@@ -224,6 +276,7 @@ export function PosScreen() {
             key={set.id}
             set={set}
             products={byId}
+            sets={allSets}
             available={shortagesOf(addSetToCart([], set)).length === 0}
             inCart={lines.find((line) => line.type === 'set' && line.setId === set.id)?.qty ?? 0}
             onPress={() => addSet(set)}
@@ -245,6 +298,25 @@ export function PosScreen() {
     </View>
   );
 
+  const customerDiscount = describeDiscount(customerRecord?.discount, byId, allSets);
+  const saleFor = (
+    <View style={styles.saleFor}>
+      <CustomerField
+        customer={customer}
+        onChoose={() => setChoosingCustomer(true)}
+        onClear={() => setCustomer(null)}
+        required={prepaid}
+        discountText={customerDiscount || undefined}
+      />
+      <Checkbox
+        label="Prepaid: picked up later"
+        hint={prepaid ? 'Nothing leaves the shelf now. The receipt gets a claim code for the Claims window.' : undefined}
+        checked={prepaid}
+        onChange={changePrepaid}
+      />
+    </View>
+  );
+
   const cartPanel = (
     <CartPanel
       lines={lines}
@@ -252,9 +324,12 @@ export function PosScreen() {
       products={byId}
       total={total}
       slipNo={lines.length > 0 ? slipNo : null}
+      saleFor={saleFor}
+      prepaid={prepaid}
+      onDiscount={canDiscount ? setDiscounting : undefined}
       onQty={setQty}
       onType={setType}
-      onClear={() => replaceCart([])}
+      onClear={clearSale}
       onCharge={charge}
       dense={!isWide}
       // Stacked under the products, the sale takes up to a third of the screen.
@@ -292,7 +367,32 @@ export function PosScreen() {
         </View>
       )}
 
-      <PaymentDialog visible={paying} total={total} onCancel={() => setPaying(false)} onConfirm={complete} />
+      <PaymentDialog
+        visible={paying}
+        total={total}
+        onCancel={() => setPaying(false)}
+        onConfirm={complete}
+        title={prepaid ? 'Payment (prepaid order)' : 'Payment'}
+      />
+      <CustomerPickerDialog
+        visible={choosingCustomer}
+        title={prepaid ? 'Who will pick it up?' : 'Customer'}
+        onClose={() => setChoosingCustomer(false)}
+        onPick={(picked) => {
+          setCustomer(picked);
+          setChoosingCustomer(false);
+        }}
+      />
+      {discounting ? (
+        <DiscountDialog
+          visible
+          name={priced[indexOf(discounting)]?.name ?? ''}
+          regular={priced[indexOf(discounting)]?.regularPrice ?? priced[indexOf(discounting)]?.unitPrice ?? 0}
+          current={discounting.discount}
+          onApply={(discount) => setDiscount(discounting, discount)}
+          onClose={() => setDiscounting(null)}
+        />
+      ) : null}
       {ocr ? (
         <ReceiptScanDialog
           visible={scanning}
@@ -315,6 +415,7 @@ function ProductCard({
   onPress,
   row,
   width,
+  prepaid,
 }: {
   product: Product;
   level: StockLevel;
@@ -322,10 +423,13 @@ function ProductCard({
   onPress: () => void;
   row: boolean;
   width: number;
+  /** A prepaid order can take what is out of stock now. */
+  prepaid: boolean;
 }) {
   const { colors } = useTheme();
   const stock = sellable(product, level);
   const out = stock <= 0;
+  const blocked = out && !prepaid;
   const low = isLowStock(product, level);
   const stockLabel = out
     ? 'Out of stock'
@@ -337,14 +441,14 @@ function ProductCard({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Add ${product.name}. ${stockLabel}.`}
-      disabled={out}
+      disabled={blocked}
       onPress={onPress}
       style={({ pressed }) => [
         row ? styles.productRow : [styles.productCard, { width }],
         {
           backgroundColor: pressed ? colors.primarySoft : colors.surface,
           borderColor: inCart > 0 ? colors.primary : colors.border,
-          opacity: out ? 0.5 : 1,
+          opacity: blocked ? 0.5 : 1,
         },
       ]}
     >
@@ -355,12 +459,24 @@ function ProductCard({
         <Text weight="700" numberOfLines={1}>
           {product.name}
         </Text>
-        <Text variant="small" muted numeric>
-          {product.kind === 'cylinder'
-            ? `Refill ${formatPeso(product.refillPrice ?? product.price)} · New ${formatPeso(product.price)}`
-            : formatPeso(product.price)}
-        </Text>
-        <View style={styles.productBadges}>
+        {/* Each price stays whole: when both don't fit, "New" moves to a second line, under the refill price. */}
+        <View style={styles.prices}>
+          {product.kind === 'cylinder' ? (
+            <>
+              <Text variant="small" muted numeric numberOfLines={1}>
+                Refill {formatPeso(product.refillPrice ?? product.price)}
+              </Text>
+              <Text variant="small" muted numeric numberOfLines={1}>
+                New {formatPeso(product.price)}
+              </Text>
+            </>
+          ) : (
+            <Text variant="small" muted numeric numberOfLines={1}>
+              {formatPeso(product.price)}
+            </Text>
+          )}
+        </View>
+        <View style={[styles.productBadges, styles.bottom]}>
           <Badge label={stockLabel} tone={out ? 'danger' : low ? 'warning' : 'neutral'} />
           {inCart > 0 ? <Badge label={`${inCart} in cart`} tone="info" /> : null}
         </View>
@@ -372,6 +488,7 @@ function ProductCard({
 function SetCard({
   set,
   products,
+  sets,
   available,
   inCart,
   onPress,
@@ -380,6 +497,7 @@ function SetCard({
 }: {
   set: ProductSet;
   products: Map<string, Product>;
+  sets: Map<string, ProductSet>;
   available: boolean;
   inCart: number;
   onPress: () => void;
@@ -387,7 +505,8 @@ function SetCard({
   width: number;
 }) {
   const { colors } = useTheme();
-  const regular = regularPrice(set, products);
+  // Sets inside this set are shown as their items, priced at the items' regular prices.
+  const regular = regularPrice(set, products, sets);
   const saving = regular - set.price;
   return (
     <Pressable
@@ -412,9 +531,9 @@ function SetCard({
           {set.name}
         </Text>
         <Text variant="small" muted numberOfLines={2}>
-          {describeSet(set, products)}
+          {describeSet(set, products, sets)}
         </Text>
-        <Text variant="small" numeric weight="600">
+        <Text variant="small" numeric weight="600" numberOfLines={1}>
           {formatPeso(set.price)}
           {saving > 0 ? (
             <Text variant="small" muted numeric style={styles.strike}>
@@ -422,7 +541,7 @@ function SetCard({
             </Text>
           ) : null}
         </Text>
-        <View style={styles.productBadges}>
+        <View style={[styles.productBadges, styles.bottom]}>
           {!available ? <Badge label="Out of stock" tone="danger" /> : saving > 0 ? <Badge label={`Save ${formatPeso(saving)}`} tone="success" /> : null}
           {inCart > 0 ? <Badge label={`${inCart} in cart`} tone="info" /> : null}
         </View>
@@ -437,6 +556,9 @@ function CartPanel({
   products,
   total,
   slipNo,
+  saleFor,
+  prepaid,
+  onDiscount,
   onQty,
   onType,
   onClear,
@@ -450,6 +572,11 @@ function CartPanel({
   total: number;
   /** Shown when the cart was scanned from a handwritten receipt. */
   slipNo: string | null;
+  /** The customer and the prepaid box. */
+  saleFor: ReactNode;
+  prepaid: boolean;
+  /** Missing when this person can't give discounts (pos.discount). */
+  onDiscount?: (line: CartLine) => void;
   onQty: (line: CartLine, qty: number) => void;
   onType: (line: CartLine, type: ProductLineType) => void;
   onClear: () => void;
@@ -462,10 +589,11 @@ function CartPanel({
   const { colors } = useTheme();
   return (
     <Card
-      title="Current sale"
+      title={prepaid ? 'Prepaid order' : 'Current sale'}
       action={lines.length > 0 ? <Button title="Clear" variant="ghost" size="sm" onPress={onClear} shortcut="F4" /> : null}
       style={maxHeight === undefined ? styles.cartWide : { maxHeight }}
     >
+      {saleFor}
       {slipNo ? <Badge label={`From receipt no. ${slipNo}`} tone="info" icon="receipt-outline" /> : null}
       <ScrollView style={maxHeight === undefined ? styles.cartLines : styles.cartLinesStacked} contentContainerStyle={styles.cartLinesContent}>
         {lines.length === 0 ? (
@@ -494,6 +622,12 @@ function CartPanel({
                     {sale.items.map((item) => `${item.qty} × ${item.name}${item.type === 'item' ? '' : ` (${item.type})`}`).join(', ')}
                   </Text>
                 ) : null}
+                {sale.regularPrice !== undefined && sale.discount ? (
+                  <Text variant="small" numeric color={colors.success}>
+                    {sale.discount.source === 'customer' ? 'Customer price' : 'Discount'}: {discountLabel(sale.discount)} · regular{' '}
+                    {formatPeso(sale.regularPrice)} each
+                  </Text>
+                ) : null}
                 {sale.type === 'new' && sale.contentPrice !== undefined ? (
                   <Text variant="small" muted numeric>
                     Cylinder {formatPeso(sale.unitPrice - sale.contentPrice)} + content {formatPeso(sale.contentPrice)} each
@@ -519,6 +653,16 @@ function CartPanel({
                     </Text>
                   )}
                   <View style={styles.flex} />
+                  {onDiscount ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Discount on ${sale.name}`}
+                      onPress={() => onDiscount(line)}
+                      style={[styles.stepButton, { borderColor: line.discount ? colors.success : colors.border, backgroundColor: colors.surface }]}
+                    >
+                      <Icon name="pricetag-outline" size={16} color={line.discount ? colors.success : colors.text} />
+                    </Pressable>
+                  ) : null}
                   <Stepper value={line.qty} onChange={(qty) => onQty(line, qty)} label={sale.name} />
                 </View>
               </View>
@@ -536,7 +680,7 @@ function CartPanel({
               {formatPeso(total)}
             </Text>
           </View>
-          <Button title="Charge" icon="cash-outline" onPress={onCharge} disabled={lines.length === 0} shortcut="F9" />
+          <Button title={prepaid ? 'Take payment' : 'Charge'} icon="cash-outline" onPress={onCharge} disabled={lines.length === 0} shortcut="F9" />
         </View>
       ) : (
         <>
@@ -546,7 +690,15 @@ function CartPanel({
               {formatPeso(total)}
             </Text>
           </View>
-          <Button title="Charge" icon="cash-outline" size="lg" onPress={onCharge} disabled={lines.length === 0} shortcut="F9" fullWidth />
+          <Button
+            title={prepaid ? 'Take payment' : 'Charge'}
+            icon="cash-outline"
+            size="lg"
+            onPress={onCharge}
+            disabled={lines.length === 0}
+            shortcut="F9"
+            fullWidth
+          />
         </>
       )}
     </Card>
@@ -602,7 +754,11 @@ const styles = StyleSheet.create({
   },
   productIcon: { width: 36, height: 36, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   productInfo: { flex: 1, gap: 4 },
+  prices: { flexDirection: 'row', flexWrap: 'wrap', columnGap: spacing.sm },
   productBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  // Cards in a row are as tall as the tallest; the stock line sits at the bottom of each.
+  bottom: { marginTop: 'auto', paddingTop: 2 },
+  saleFor: { gap: spacing.xs },
   cartWide: { flex: 1 },
   cartLines: { flex: 1 },
   cartLinesStacked: { flexShrink: 1 },

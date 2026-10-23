@@ -48,7 +48,7 @@ export interface SgmBridge {
     /** Restarts on the downloaded version, or downloads it first. Resolves a message for the person. */
     install(): Promise<string>;
   };
-  /** Weekly and on-demand copies of the local database. Only for people with backups.manage. */
+  /** Weekly and on-demand copies of the local database. Only for the owner and admins (backups.manage). */
   backups: {
     info(): Promise<BackupInfo>;
     create(): Promise<BackupInfo>;

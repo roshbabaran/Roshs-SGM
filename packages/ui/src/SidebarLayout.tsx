@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Icon, type IconName } from './Icon';
+import { Logo } from './Logo';
 import { Text } from './Text';
 import { radius, spacing, useTheme } from './theme';
 import { useBreakpoint } from './useBreakpoint';
@@ -42,9 +43,7 @@ export function SidebarLayout({
     <View style={[styles.root, { backgroundColor: colors.background }]}>
       <View style={[styles.sidebar, { width: compact ? 76 : 236, backgroundColor: colors.sidebar }]}>
         <View style={[styles.brand, compact && styles.brandCompact]}>
-          <View style={[styles.logo, { backgroundColor: colors.accent }]}>
-            <Icon name="flame" size={18} color="#FFFFFF" />
-          </View>
+          <Logo size={36} />
           {compact ? null : (
             <View>
               <Text weight="700" color="#FFFFFF">
@@ -112,7 +111,6 @@ const styles = StyleSheet.create({
   sidebar: { paddingVertical: spacing.lg },
   brand: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingHorizontal: spacing.lg, marginBottom: spacing.xl },
   brandCompact: { justifyContent: 'center', paddingHorizontal: 0 },
-  logo: { width: 36, height: 36, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   nav: { flex: 1 },
   navContent: { gap: 2, paddingHorizontal: spacing.sm },
   item: {

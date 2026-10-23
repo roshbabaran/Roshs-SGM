@@ -64,7 +64,7 @@ describe('stock ledger', () => {
   it('takes a full cylinder and an empty back for a refill', () => {
     const movements = saleMovements(saleOf([{ productId: 'lpg-a-11', type: 'refill', qty: 2 }]), 'u-cashier');
     const level = stockByProduct(movements, 'branch-main').get('lpg-a-11');
-    expect(level).toEqual({ full: -2, empty: 2, unit: 0 });
+    expect(level).toEqual({ full: -2, empty: 2, unit: 0, defective: 0 });
   });
 
   it('takes a full cylinder, and an empty one too, for a new-cylinder sale', () => {
@@ -73,17 +73,18 @@ describe('stock ledger', () => {
       full: -2,
       empty: NEW_SALE_TAKES_EMPTY ? -2 : 0,
       unit: 0,
+      defective: 0,
     });
   });
 
   it('takes a full cylinder and nothing back when the cylinder is borrowed', () => {
     const movements = saleMovements(saleOf([{ productId: 'lpg-a-11', type: 'borrow', qty: 1 }]), 'u-cashier');
-    expect(stockByProduct(movements, 'branch-main').get('lpg-a-11')).toEqual({ full: -1, empty: 0, unit: 0 });
+    expect(stockByProduct(movements, 'branch-main').get('lpg-a-11')).toEqual({ full: -1, empty: 0, unit: 0, defective: 0 });
   });
 
   it('counts accessories as units and ignores other branches', () => {
     const movements = saleMovements(saleOf([{ productId: 'acc-hose', type: 'item', qty: 3 }]), 'u-cashier');
-    expect(stockByProduct(movements, 'branch-main').get('acc-hose')).toEqual({ full: 0, empty: 0, unit: -3 });
+    expect(stockByProduct(movements, 'branch-main').get('acc-hose')).toEqual({ full: 0, empty: 0, unit: -3, defective: 0 });
     expect(stockByProduct(movements, 'branch-2').size).toBe(0);
   });
 });
@@ -110,7 +111,7 @@ describe('stock over the day', () => {
   ];
 
   it('counts only what happened before a moment', () => {
-    expect(stockBefore(movements, 'branch-main', '2026-10-12T00:00:00.000Z').get('lpg-a-11')).toEqual({ full: 10, empty: 4, unit: 0 });
+    expect(stockBefore(movements, 'branch-main', '2026-10-12T00:00:00.000Z').get('lpg-a-11')).toEqual({ full: 10, empty: 4, unit: 0, defective: 0 });
   });
 
   it("gives each entry the product's stock before and after it, in the order they happened", () => {

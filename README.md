@@ -41,9 +41,11 @@ Until `EXPO_PUBLIC_API_URL` is set (below), both apps run against a built-in dem
 
 | Username | PIN | Role | Can |
 | --- | --- | --- | --- |
-| `owner` | `1111` | Owner | Everything, including reports, products and sets, users, voiding sales and device settings |
-| `cashier` | `2222` | Employee | Dashboard, sell, borrowing, transactions, view stock |
-| `warehouse` | `3333` | Warehouse staff | View stock and record movements (deliveries, transfers, damage) |
+| `owner` | `1111` | Owner | Everything, including reports, products and sets, users and devices, discounts, approving returns and defectives, voiding sales and device settings |
+| `admin` | `4444` | Admin | Everything the owner can, but can't change the owner's or other admins' accounts |
+| `manager` | `5555` | Branch manager | Runs Main Branch only: sell, discounts, sales on credit, cheques, approving returns and defectives, voiding sales, stock (including accepting stock sent to it) and reports. Not products, users and devices, or backups |
+| `cashier` | `2222` | Employee | Dashboard, sell, claims (pick ups, and returns and defectives that wait for approval), borrowing, transactions, view stock |
+| `warehouse` | `3333` | Warehouse staff | View stock, record movements (deliveries, stock sent out, defectives), and accept stock sent to the Warehouse |
 
 In SGM Desk, **Settings → Simulate no connection** shows offline mode: sales keep working and sync when the connection returns. **Reset demo data** puts the sample data back. The sample data has three sets and three borrowers; if a device ran the app before they were added, use **Reset demo data** once to see them.
 
@@ -68,15 +70,18 @@ Deploy the API after changing it. It needs one secret, `SGM_JWT_SECRET`, set und
 npx supabase functions deploy api --no-verify-jwt --use-api --project-ref <Project ID>
 ```
 
-Users, PINs and devices are managed in the SQL Editor. A new PC or phone can't sign in until it is approved; its sign-in message shows its Device ID.
+Users, PINs and devices are managed in the apps, in **Users & Devices** (the owner and admins; only the owner can change the owner's and admins' accounts). Every change there goes straight to the server and is never saved offline, so the page is locked while the server can't be reached. A new PC or phone can't sign in until it is approved there; its sign-in message shows its Device ID, or it can be added ahead of time with the ID from its Settings page. The first owner account, and new branches, are still made in the SQL Editor:
 
 ```sql
 select sgm.add_location('branch-3', 'Third branch', 'branch');
-select sgm.add_user('maria', 'Maria Santos', 'employee', array['branch-main'], '4821');
-select sgm.reset_pin('maria', '9035');
-select sgm.set_user_active('maria', false);
-select sgm.approve_device('<Device ID>', 'Main branch counter PC');
+select sgm.add_user('nathan', 'Nathan', 'owner', array['branch-main'], '4821');
 ```
+
+The same functions (`sgm.reset_pin`, `sgm.set_user_active`, `sgm.approve_device`) still work there if nobody can sign in to Users & Devices.
+
+#### Upgrading the server to 1.1.0
+
+Run `supabase/upgrade-1.1.0.sql` once in the SQL Editor, then deploy the API as above. SGM 1.0 keeps working against the 1.1.0 API (it isn't sent Claims records, which it can't store), but it doesn't know the admin and branch manager roles (they can't sign in on it), doesn't count defective stock apart and sells a set that holds other sets with only its own items. So once the 1.1.0 installer and APK are released, raise the minimum version to 1.1.0 (the last lines of the upgrade file, and [Turning SGM off, or forcing an update](#turning-sgm-off-or-forcing-an-update)). SGM Pocket 1.1.0 is a new APK, not an `eas update`: its icon and version changed.
 
 ## Releases and updates
 
@@ -101,11 +106,7 @@ Only raise `min_version` to a version that is already released, or every device 
 
 ### Backups
 
-SGM Desk copies its local database into a `Backups` folder in the Windows account's app data (`%APPDATA%\SGM Desk\Backups`) once a week, and keeps the newest 12. In **Settings → Backups**, the owner and anyone given `backups.manage` can back up now and open the folder; nobody else sees the card, and the main process refuses the request too. Give someone those rights (an admin) with:
-
-```sql
-select sgm.set_extra_permissions('maria', array['backups.manage']);
-```
+SGM Desk copies its local database into a `Backups` folder in the Windows account's app data (`%APPDATA%\SGM Desk\Backups`) once a week, and keeps the newest 12. In **Settings → Backups**, the owner and admins can back up now and open the folder; nobody else sees the card, and the main process refuses the request too. `backups.manage` can't be given to anyone else.
 
 A backup holds everything that PC has synced plus changes not yet sent; it opens in any SQLite viewer. Other Windows accounts on the PC can't open the folder, but anyone using the same Windows account can, so give each cashier their own Windows account if that matters. The server's copy is the nightly backup below.
 
@@ -154,12 +155,14 @@ To restore into a new Supabase project instead (if the old one is gone), skip ru
 ## How it works
 
 - **Offline first.** Each device keeps its own SQLite database: SGM Desk uses the SQLite built into Electron (`node:sqlite`, no native modules to compile) and SGM Pocket uses `expo-sqlite`. Every change also goes into an outbox, and `SyncEngine` sends it to the server and brings back other devices' changes, every minute and right after each new sale or stock movement.
-- **Stock is a ledger.** Stock on hand is never typed over; it is the sum of movements (delivery, sale, transfer, adjustment, damage). Two offline devices can sell at the same time and sync later without overwriting each other. Full and empty cylinders are counted separately: a refill sale takes an empty back, a new-cylinder sale also takes an empty off the shelf (see `NEW_SALE_TAKES_EMPTY` below), and a borrowed cylinder goes out full and comes back as an empty.
-- **Borrowing is a ledger too.** Refills on credit, lent cylinders, returns and payments are entries in `loans`. What someone owes and how many cylinders they have out are sums of their entries; payments and returns settle the oldest first, so every open item keeps the date it was borrowed.
+- **Stock is a ledger.** Stock on hand is never typed over; it is the sum of movements (delivery, sale, transfer, adjustment, defective). Two offline devices can sell at the same time and sync later without overwriting each other. Full and empty cylinders are counted separately: a refill sale takes an empty back, a new-cylinder sale also takes an empty off the shelf (see `NEW_SALE_TAKES_EMPTY` below), and a borrowed cylinder goes out full and comes back as an empty. Defective cylinders and accessories have a count of their own, never sold: a defective exchange or a **Defective** movement puts them there, and **To Depot** (or an adjustment) takes them out.
+- **Stock sent between branches is accepted where it arrives.** **Stocks Out** takes the stock off the sender's count as it leaves. It shows in the receiving branch's Inventory (and on its dashboard) until the owner, an admin, or that branch's manager or warehouse staff counts what arrived and accepts it, which puts it on their count; nobody records Stocks In by hand any more. If the count doesn't match, they say what was different, and the sending branch's manager or warehouse staff (or the owner or an admin) checks its stock and settles it: what didn't arrive never left (it goes back on the sender's count) or more was sent than recorded (it comes off), or the counts stay as they are (lost on the way, or the receiving branch keeps the extra). Accepting stock comes only with those roles and can't be given to anyone else (`ROLE_ONLY` in `roles.ts`). See `packages/core/src/transfers.ts`.
+- **Borrowing is a ledger too.** Sales on credit (anything in the store, with an optional part paid now), lent cylinders, returns, payments and post-dated cheques are entries in `loans`. What someone owes and how many cylinders they have out are sums of their entries; payments and returns settle the oldest first, so every open item keeps the date it was borrowed.
 - **Money is in centavos** (whole numbers), so totals never pick up rounding errors.
 - **Handwritten receipts can be scanned into a sale.** On the Sell screen, **Scan receipt** reads a photo offline with PaddleOCR's models, and the cashier checks every line against the photo before it goes into the cart. The receipt number is saved with the sale so the same receipt can't be entered twice. SGM Pocket needs its development build for this (`npx expo run:android`), not Expo Go. See `packages/core/src/ocr/README.md`.
-- **Signing in needs the server.** After that, a device works offline for up to 72 hours before it must reach the server again.
-- **Roles live in `packages/core/src/roles.ts`.** The apps hide menus and buttons a person can't use, but the server must check the same permissions on every request.
+- **Signing in needs the server, with one exception.** After signing in, a device works offline for up to 72 hours before it must reach the server again. Closing SGM Desk signs the person out (also after End task or a crash, at the next start). While the server can't be reached, only the last employee or warehouse staff who signed in on that device can sign in again, with the PIN checked against a salted hash on the device and their last sign-in's token, until that token runs out; five wrong PINs, a sign-in by someone else, or the server turning the token down (a disabled account) ends it. The owner, admins and branch managers always need the server to sign in (`needsServerToSignIn` in `roles.ts`), though once signed in they keep working offline too. Sales waiting to sync are kept and sent once the connection is back.
+- **Customers and claims.** A sale can name a customer, who may have their own prices or a percentage off (**Products → Customer prices**). Cashiers with `pos.discount` can also discount a line at the counter. Prepaid orders are paid at **Sell** and picked up in **Claims**, where returns and defective exchanges (cylinders and accessories) are recorded too; a cashier's return or exchange waits for the owner, an admin or the branch's manager to approve it.
+- **Roles live in `packages/core/src/roles.ts`.** The apps hide menus and buttons a person can't use, but the server must check the same permissions on every request. The owner and admins work at every branch; everyone else, branch managers included, only where they are assigned, and the server refuses their changes anywhere else.
 
 ### SGM Desk's security
 
@@ -187,7 +190,7 @@ The API server must allow requests from the origin `app://sgm` (CORS), and from 
 | Sample products and demo accounts | `packages/core/src/demo.ts` |
 | The Windows installer and where it looks for updates | `apps/desk/electron-builder.yml` |
 | SGM Pocket's builds (server address, CPU type, update channel) | `apps/pocket/eas.json` |
-| Who may make and open backups | `backups.manage` in `packages/core/src/roles.ts`, and `sgm.set_extra_permissions` |
+| Who may make and open backups, and accept stock from other branches | Only the roles that have them (`ROLE_ONLY` in `packages/core/src/roles.ts`) |
 | When the server backup runs, and how many are kept | `.github/workflows/backup.yml` and `scripts/backup/prune.mjs` |
 | How receipts are read (photo checks, thresholds, matching) | `packages/core/src/ocr/` (see its `README.md`) |
 

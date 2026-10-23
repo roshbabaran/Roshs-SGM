@@ -194,7 +194,7 @@ export function SettingsScreen() {
             )}
           </Row>
           <Text variant="small" muted>
-            The owner approves each device once on the server using its Device ID. Only the owner can move a device to another branch.
+            The owner or an admin approves each device once in Users &amp; Devices, using its Device ID. Only they can move a device to another branch.
           </Text>
         </Card>
 

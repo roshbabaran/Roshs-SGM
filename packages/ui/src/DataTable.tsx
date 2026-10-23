@@ -58,9 +58,14 @@ export function FitTablesToScreen({ children }: { children: ReactNode }) {
   );
 }
 
+/** The height of the page inside FitTablesToScreen (SGM Pocket), or null outside one (SGM Desk). */
+export function useFitHeight(): number | null {
+  return useContext(FitHeightContext);
+}
+
 /** A sortable, searchable, paged table that works with a mouse and on a phone. */
 export function DataTable<T>(props: DataTableProps<T>) {
-  const fitHeight = useContext(FitHeightContext);
+  const fitHeight = useFitHeight();
   return fitHeight === null ? <ScrollingTable {...props} /> : <FittedTable {...props} screenHeight={fitHeight} />;
 }
 
@@ -438,7 +443,8 @@ function FittedTable<T>(props: DataTableProps<T> & { screenHeight: number }) {
   );
 }
 
-function PagerButton({ icon, label, disabled, onPress }: { icon: IconName; label: string; disabled: boolean; onPress: () => void }) {
+/** A phone-sized paging button with just an arrow on it. */
+export function PagerButton({ icon, label, disabled, onPress }: { icon: IconName; label: string; disabled: boolean; onPress: () => void }) {
   const { colors } = useTheme();
   return (
     <Pressable

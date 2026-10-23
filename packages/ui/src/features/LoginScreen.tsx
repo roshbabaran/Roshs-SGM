@@ -1,10 +1,10 @@
-import { ApiError, DEMO_ACCOUNTS, loginFormSchema } from '@sgm/core';
+import { DEMO_ACCOUNTS, loginFormSchema } from '@sgm/core';
 import { useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { Banner, Card } from '../Basics';
 import { Button } from '../Button';
-import { Icon } from '../Icon';
+import { Logo } from '../Logo';
 import { useServices } from '../services';
 import { Text } from '../Text';
 import { TextField } from '../TextField';
@@ -25,13 +25,8 @@ export function LoginScreen() {
     try {
       await session.login(username, pin);
     } catch (e) {
-      setError(
-        e instanceof ApiError && e.kind === 'network'
-          ? "Can't reach the SGM server. Signing in needs a connection; once signed in, this device works offline."
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
+      // Without the server, the session explains who may still sign in offline.
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -42,9 +37,7 @@ export function LoginScreen() {
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Card style={styles.card}>
           <View style={styles.brand}>
-            <View style={[styles.logo, { backgroundColor: colors.accent }]}>
-              <Icon name="flame" size={26} color="#FFFFFF" />
-            </View>
+            <Logo size={48} />
             <View>
               <Text variant="heading">{appName}</Text>
               <Text muted>Sibugay Gas Marketing</Text>
@@ -113,7 +106,6 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
   card: { width: '100%', maxWidth: 400, gap: spacing.lg },
   brand: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  logo: { width: 48, height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   demo: { borderTopWidth: 1, paddingTop: spacing.md, gap: spacing.sm },
   demoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   chip: { borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: spacing.md, paddingVertical: 6, cursor: 'pointer' },
