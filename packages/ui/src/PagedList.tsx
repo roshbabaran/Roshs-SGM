@@ -12,7 +12,7 @@ const FOOTER_HEIGHT = 48;
 const FIRST_GUESS_ROW_HEIGHT = 44;
 
 /**
- * A list shown a page at a time, with Previous and Next under it once there are
+ * A list shown a page at a time, with Previous and Next above it once there are
  * more. On SGM Desk a page is `pageSize` rows. Inside FitTablesToScreen (SGM
  * Pocket) it is as many rows as fit on the screen, less `reserve` for whatever
  * else the card shows above the list.
@@ -42,8 +42,26 @@ export function PagedList<T>({
   const shown = items.slice(current * size, current * size + size);
   const range = `${current * size + 1}–${Math.min(items.length, (current + 1) * size)} of ${items.length}`;
 
+  // The page buttons go above the list, so they stay put when a page's rows are shorter or taller.
   return (
     <View>
+      {items.length <= size ? null : fitHeight === null ? (
+        <View style={styles.pager}>
+          <Text variant="small" muted style={styles.pagerText}>
+            {range}
+          </Text>
+          <Button title="Previous" size="sm" variant="secondary" icon="chevron-back" disabled={current === 0} onPress={() => setPage(current - 1)} />
+          <Button title="Next" size="sm" variant="secondary" icon="chevron-forward" disabled={current >= pages - 1} onPress={() => setPage(current + 1)} />
+        </View>
+      ) : (
+        <View style={styles.pager}>
+          <PagerButton icon="chevron-up" label="Previous rows" disabled={current === 0} onPress={() => setPage(current - 1)} />
+          <Text variant="small" muted align="center" style={styles.pagerText}>
+            {`Rows ${range}`}
+          </Text>
+          <PagerButton icon="chevron-down" label="Next rows" disabled={current >= pages - 1} onPress={() => setPage(current + 1)} />
+        </View>
+      )}
       {shown.map((item) => (
         <View
           key={keyOf(item)}
@@ -56,28 +74,11 @@ export function PagedList<T>({
           {renderItem(item)}
         </View>
       ))}
-      {items.length <= size ? null : fitHeight === null ? (
-        <View style={styles.footer}>
-          <Text variant="small" muted style={styles.footerText}>
-            {range}
-          </Text>
-          <Button title="Previous" size="sm" variant="secondary" icon="chevron-back" disabled={current === 0} onPress={() => setPage(current - 1)} />
-          <Button title="Next" size="sm" variant="secondary" icon="chevron-forward" disabled={current >= pages - 1} onPress={() => setPage(current + 1)} />
-        </View>
-      ) : (
-        <View style={styles.footer}>
-          <PagerButton icon="chevron-up" label="Previous rows" disabled={current === 0} onPress={() => setPage(current - 1)} />
-          <Text variant="small" muted align="center" style={styles.footerText}>
-            {`Rows ${range}`}
-          </Text>
-          <PagerButton icon="chevron-down" label="Next rows" disabled={current >= pages - 1} onPress={() => setPage(current + 1)} />
-        </View>
-      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  footer: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingTop: spacing.sm },
-  footerText: { flex: 1 },
+  pager: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingBottom: spacing.sm },
+  pagerText: { flex: 1 },
 });

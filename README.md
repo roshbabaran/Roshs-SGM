@@ -79,6 +79,8 @@ select sgm.add_user('nathan', 'Nathan', 'owner', array['branch-main'], '4821');
 
 The same functions (`sgm.reset_pin`, `sgm.set_user_active`, `sgm.approve_device`) still work there if nobody can sign in to Users & Devices.
 
+**Device IDs.** Each PC and phone gets a Device ID the first time the app opens, and keeps it through updates. SGM Desk keeps it in `%APPDATA%\SGM Desk\device.json`, with a copy in `device.backup.json` next to it in case one is damaged (`apps/desk/electron/device.ts`). SGM Pocket keeps it in the phone's secure storage and in `device-id.txt` in the app's own folder (`apps/pocket/src/services/device-id.ts`). When both are gone (after Clear data or a reinstall), it works the same ID out again from Android's ID for the app, so only a factory reset gives a phone a new ID. A device that does get a new ID must be approved again; remove its old entry in Users & Devices.
+
 #### Upgrading the server to 1.1.0
 
 Run `supabase/upgrade-1.1.0.sql` once in the SQL Editor, then deploy the API as above. SGM 1.0 keeps working against the 1.1.0 API (it isn't sent Claims records, which it can't store), but it doesn't know the admin and branch manager roles (they can't sign in on it), doesn't count defective stock apart and sells a set that holds other sets with only its own items. So once the 1.1.0 installer and APK are released, raise the minimum version to 1.1.0 (the last lines of the upgrade file, and [Turning SGM off, or forcing an update](#turning-sgm-off-or-forcing-an-update)). SGM Pocket 1.1.0 is a new APK, not an `eas update`: its icon and version changed.

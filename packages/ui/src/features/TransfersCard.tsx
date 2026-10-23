@@ -110,12 +110,12 @@ export function TransfersCard() {
                 color={t.state === 'mismatch' ? colors.danger : incoming ? colors.primary : colors.textMuted}
               />
               <View style={styles.rowText}>
-                <Text numberOfLines={1}>{what}</Text>
-                <Text variant="small" muted numberOfLines={2}>
+                <Text>{what}</Text>
+                <Text variant="small" muted>
                   {detail}
                 </Text>
                 {t.state === 'mismatch' && t.accepted?.reason ? (
-                  <Text variant="small" muted numberOfLines={2}>
+                  <Text variant="small" muted>
                     {`“${t.accepted.reason}”`}
                   </Text>
                 ) : null}
@@ -196,7 +196,7 @@ function AcceptDialog({ transfer, names, onClose }: { transfer: Transfer | null;
         </Text>
       ) : null}
       <TextField
-        label="How many arrived"
+        label="Actual stocks received"
         value={arrived}
         onChangeText={(v) => setArrived(v.replace(/\D/g, ''))}
         keyboardType="number-pad"

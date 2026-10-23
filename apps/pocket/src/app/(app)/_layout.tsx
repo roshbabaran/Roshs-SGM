@@ -11,8 +11,8 @@ const tabIcon =
   ({ color, size }: { color: ColorValue; size: number }) => <Icon name={name} color={color} size={size} />;
 
 /**
- * Tabs after sign-in: Home, Sell, Claims, Borrowing and More. Tabs a person may not use are hidden
- * (href: null); More lists the rest, Stock among them.
+ * Tabs after sign-in: Dashboard, Sell, Claims, Borrowing and More, named as in SGM Desk's menu. Tabs a
+ * person may not use are hidden (href: null); More lists the rest, Inventory among them.
  * The tab bar has SGM Desk's sidebar colours from light mode, in light and dark mode alike.
  */
 export default function AppLayout() {
@@ -32,7 +32,7 @@ export default function AppLayout() {
         tabBarActiveBackgroundColor: lightColors.sidebarActive,
       }}
     >
-      <Tabs.Screen name="index" options={{ title: 'Home', href: shownIf(work.can('dashboard.view')), tabBarIcon: tabIcon('grid-outline') }} />
+      <Tabs.Screen name="index" options={{ title: 'Dashboard', href: shownIf(work.can('dashboard.view')), tabBarIcon: tabIcon('grid-outline') }} />
       <Tabs.Screen name="sell" options={{ title: 'Sell', href: shownIf(work.can('pos.sell')), tabBarIcon: tabIcon('cart-outline') }} />
       <Tabs.Screen name="claims" options={{ title: 'Claims', href: shownIf(work.can('pos.sell')), tabBarIcon: tabIcon('bag-check-outline') }} />
       <Tabs.Screen

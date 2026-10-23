@@ -14,23 +14,12 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
 import { createApkUpdates } from './apk-updates';
+import { loadDeviceId } from './device-id';
 import { createPocketScanner } from './ocr';
 import { openSqliteStore } from './sqlite-store';
 
 // Phones have no global `crypto`, so record IDs come from expo-crypto.
 setUuidGenerator(Crypto.randomUUID);
-
-const DEVICE_KEY = 'sgm.device-id';
-
-/** A permanent ID for this phone, made on first launch; the owner approves it once on the server. */
-async function loadDeviceId(): Promise<string> {
-  let id = await SecureStore.getItemAsync(DEVICE_KEY);
-  if (!id) {
-    id = Crypto.randomUUID();
-    await SecureStore.setItemAsync(DEVICE_KEY, id);
-  }
-  return id;
-}
 
 export const createPocketServices = once(async () => {
   const apiUrl = process.env.EXPO_PUBLIC_API_URL;

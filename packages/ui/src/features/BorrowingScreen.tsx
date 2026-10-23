@@ -188,11 +188,11 @@ export function BorrowingScreen({ initialShow = 'open' }: { initialShow?: Show }
       sortValue: (a) => a.borrower.name,
       render: (a) => (
         <View style={styles.cellText}>
-          <Text weight="600" numberOfLines={1}>
+          <Text weight="600">
             {a.borrower.name}
           </Text>
           {a.borrower.phone ? (
-            <Text variant="small" muted numberOfLines={1}>
+            <Text variant="small" muted>
               {a.borrower.phone}
             </Text>
           ) : null}

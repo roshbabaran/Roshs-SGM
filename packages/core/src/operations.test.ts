@@ -7,7 +7,7 @@ import type { OutboxEntry, Sale, StockMovement, User } from './models';
 import { recordMovement, recordSale, StockError, voidSale, type OpContext } from './operations';
 import { PermissionError } from './roles';
 import { MemoryStore, ObservableStore } from './store';
-import { movementFormSchema, paymentFormSchema } from './validation';
+import { downPaymentSchema, movementFormSchema, paymentFormSchema } from './validation';
 
 const [owner, cashier, warehouse] = DEMO_USERS as [User, User, User];
 
@@ -191,5 +191,30 @@ describe('payment form', () => {
   it('needs a reference number for GCash', () => {
     expect(schema.safeParse({ method: 'gcash', tendered: '', reference: '' }).success).toBe(false);
     expect(schema.parse({ method: 'gcash', tendered: '', reference: 'GC123456' }).reference).toBe('GC123456');
+  });
+});
+
+describe('down payment on a sale on credit', () => {
+  const schema = downPaymentSchema(95000);
+
+  it('takes blank or 0 as nothing paid now, whatever method is picked', () => {
+    for (const amount of ['', '0', '0.00']) {
+      for (const method of ['cash', 'gcash', 'maya', 'bank'] as const) {
+        const result = schema.safeParse({ amount, method, reference: '' });
+        expect(result.success).toBe(true);
+        expect(result.data).toBeNull();
+      }
+    }
+  });
+
+  it('records part paid now, with a reference number for GCash', () => {
+    expect(schema.parse({ amount: '200', method: 'cash', reference: '' })).toMatchObject({ method: 'cash', amount: 20000 });
+    expect(schema.safeParse({ amount: '200', method: 'gcash', reference: '' }).success).toBe(false);
+    expect(schema.parse({ amount: '200', method: 'gcash', reference: 'GC123456' })).toMatchObject({ amount: 20000, reference: 'GC123456' });
+  });
+
+  it('turns away the full amount or a negative one', () => {
+    expect(schema.safeParse({ amount: '950', method: 'cash', reference: '' }).success).toBe(false);
+    expect(schema.safeParse({ amount: '-5', method: 'cash', reference: '' }).success).toBe(false);
   });
 });

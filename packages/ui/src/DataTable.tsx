@@ -120,8 +120,22 @@ type TableRows<T> = ReturnType<typeof useTableRows<T>>;
 const alignItems = (align: Column<unknown>['align']) =>
   align === 'right' ? ('flex-end' as const) : align === 'center' ? ('center' as const) : ('flex-start' as const);
 
-function Toolbar<T>({ table, searchPlaceholder, toolbar }: { table: TableRows<T>; searchPlaceholder?: string; toolbar?: ReactNode }) {
-  if (!searchPlaceholder && !toolbar) return null;
+/**
+ * The search box and buttons above a table, and on SGM Desk the page buttons at the end of the same line
+ * (or the next line, when there is no room). Above the table, they stay put however tall its rows are.
+ */
+function Toolbar<T>({
+  table,
+  searchPlaceholder,
+  toolbar,
+  pager,
+}: {
+  table: TableRows<T>;
+  searchPlaceholder?: string;
+  toolbar?: ReactNode;
+  pager?: ReactNode;
+}) {
+  if (!searchPlaceholder && !toolbar && !pager) return null;
   return (
     <View style={styles.toolbar}>
       {searchPlaceholder ? (
@@ -134,6 +148,7 @@ function Toolbar<T>({ table, searchPlaceholder, toolbar }: { table: TableRows<T>
         />
       ) : null}
       {toolbar}
+      {pager}
     </View>
   );
 }
@@ -158,7 +173,7 @@ function HeaderCell<T>({ column, table, style }: { column: Column<T>; table: Tab
       {column.subColumns ? (
         <View style={styles.groupHeader}>
           <View style={[styles.groupTitle, { borderBottomColor: colors.border }]}>
-            <Text variant="label" muted={!active} numberOfLines={1}>
+            <Text variant="label" muted={!active} align="center" style={styles.shrink}>
               {column.title}
             </Text>
             {arrow}
@@ -166,7 +181,7 @@ function HeaderCell<T>({ column, table, style }: { column: Column<T>; table: Tab
           <View style={styles.split}>
             {column.subColumns.map((label, i) => (
               <View key={label} style={[styles.splitPart, i > 0 && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border }]}>
-                <Text variant="small" muted numberOfLines={1}>
+                <Text variant="small" muted>
                   {label}
                 </Text>
               </View>
@@ -175,7 +190,7 @@ function HeaderCell<T>({ column, table, style }: { column: Column<T>; table: Tab
         </View>
       ) : (
         <View style={styles.headerCell}>
-          <Text variant="label" muted={!active} numberOfLines={2} style={styles.shrink}>
+          <Text variant="label" muted={!active} style={styles.shrink}>
             {column.title}
           </Text>
           {arrow}
@@ -185,13 +200,14 @@ function HeaderCell<T>({ column, table, style }: { column: Column<T>; table: Tab
   );
 }
 
-function BodyCell<T>({ column, row, style, lines }: { column: Column<T>; row: T; style: CellStyle; lines: number }) {
+/** Long text wraps onto as many lines as it needs, so nothing is cut off. */
+function BodyCell<T>({ column, row, style }: { column: Column<T>; row: T; style: CellStyle }) {
   return (
     <View style={style}>
       {column.render ? (
         column.render(row)
       ) : (
-        <Text numberOfLines={lines} align={column.align} numeric={column.align === 'right'}>
+        <Text align={column.align} numeric={column.align === 'right'}>
           {column.text?.(row) ?? ''}
         </Text>
       )}
@@ -209,7 +225,7 @@ export function SplitCell({ values, muted }: { values: string[]; muted?: boolean
     <View style={styles.split}>
       {values.map((value, i) => (
         <View key={i} style={[styles.splitPart, i > 0 && { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border }]}>
-          <Text numeric numberOfLines={1} muted={muted?.[i]}>
+          <Text numeric muted={muted?.[i]}>
             {value}
           </Text>
         </View>
@@ -241,12 +257,23 @@ function ScrollingTable<T>(props: DataTableProps<T>) {
     closesGroup(c, next) && [styles.groupEnd, { borderRightColor: colors.border }],
   ];
 
+  const pager =
+    sorted.length > pageSize ? (
+      <View style={styles.topPager}>
+        <Text variant="small" muted>
+          {current * pageSize + 1}–{Math.min(sorted.length, (current + 1) * pageSize)} of {sorted.length}
+        </Text>
+        <Button title="Previous" size="sm" variant="secondary" icon="chevron-back" disabled={current === 0} onPress={() => table.setPage(current - 1)} />
+        <Button title="Next" size="sm" variant="secondary" icon="chevron-forward" disabled={current >= pages - 1} onPress={() => table.setPage(current + 1)} />
+      </View>
+    ) : null;
+
   return (
     <View style={styles.container}>
-      <Toolbar table={table} searchPlaceholder={searchPlaceholder} toolbar={toolbar} />
+      <Toolbar table={table} searchPlaceholder={searchPlaceholder} toolbar={toolbar} pager={pager} />
 
       <ScrollView horizontal onLayout={(event) => setViewportWidth(event.nativeEvent.layout.width)}>
-        {/* As wide as the space it has, but never narrower than minWidth: long text is cut with "…" instead of widening the table. */}
+        {/* As wide as the space it has, but never narrower than minWidth: long text wraps onto more lines instead of widening the table. */}
         <View style={[styles.table, { width: Math.max(viewportWidth, minWidth), borderColor: colors.border }]}>
           <View style={[styles.row, styles.headerRow, { backgroundColor: colors.surfaceMuted, borderBottomColor: colors.border }]}>
             {columns.map((c, i) => (
@@ -270,7 +297,7 @@ function ScrollingTable<T>(props: DataTableProps<T>) {
               ]}
             >
               {columns.map((c, i) => (
-                <BodyCell key={c.key} column={c} row={row} style={cellStyle(c, columns[i + 1])} lines={1} />
+                <BodyCell key={c.key} column={c} row={row} style={cellStyle(c, columns[i + 1])} />
               ))}
             </Pressable>
           ))}
@@ -282,20 +309,11 @@ function ScrollingTable<T>(props: DataTableProps<T>) {
           ) : null}
         </View>
       </ScrollView>
-
-      {sorted.length > pageSize ? (
-        <View style={styles.footer}>
-          <Text variant="small" muted style={styles.footerText}>
-            {current * pageSize + 1}–{Math.min(sorted.length, (current + 1) * pageSize)} of {sorted.length}
-          </Text>
-          <Button title="Previous" size="sm" variant="secondary" icon="chevron-back" disabled={current === 0} onPress={() => table.setPage(current - 1)} />
-          <Button title="Next" size="sm" variant="secondary" icon="chevron-forward" disabled={current >= pages - 1} onPress={() => table.setPage(current + 1)} />
-        </View>
-      ) : null}
     </View>
   );
 }
 
+/** The shortest a row is; rows with longer text grow to fit it. */
 const ROW_HEIGHT = 56;
 const FOOTER_HEIGHT = 44;
 /** Room the page keeps around a table: the page's padding, the card's padding and title, and a line of notes. */
@@ -304,13 +322,22 @@ const PAGE_CHROME = 150;
 /**
  * SGM Pocket: a table no bigger than the screen. The first column always shows;
  * the rest are shown a few at a time with the column buttons, and the rows a
- * screenful at a time with Previous and Next, which stay under the table.
+ * screenful at a time with Previous and Next. Those buttons sit above the
+ * table, so they stay put when a page of rows is shorter or taller.
  */
 function FittedTable<T>(props: DataTableProps<T> & { screenHeight: number }) {
   const { columns, rowKey, searchPlaceholder, onRowPress, emptyText = 'Nothing to show yet.', toolbar, screenHeight } = props;
   const { colors } = useTheme();
   const [width, setWidth] = useState(0);
   const [group, setGroup] = useState(0);
+  // The tallest row and header seen so far: long text wraps, so a page of taller rows still fits the screen.
+  // Not counted before the table knows its width, when the columns have no room and every row is far too tall.
+  const [rowHeight, setRowHeight] = useState(ROW_HEIGHT);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  const noteHeight = (part: 'row' | 'header', height: number) => {
+    if (width <= 0) return;
+    (part === 'row' ? setRowHeight : setHeaderHeight)((h) => Math.max(h, height));
+  };
 
   const [first, ...rest] = columns;
   const firstWidth = Math.round(Math.min(Math.max(first?.width ?? width * 0.4, 110), width * 0.42, 240));
@@ -349,13 +376,13 @@ function FittedTable<T>(props: DataTableProps<T> & { screenHeight: number }) {
   const fixedHeight =
     PAGE_CHROME +
     (searchPlaceholder || toolbar ? 56 : 0) +
-    (grouped ? 52 : 40) +
+    Math.max(headerHeight, grouped ? 52 : 40) +
     FOOTER_HEIGHT * (paged && !sideBySide ? 2 : 1) +
     spacing.md * 2;
   // Rows that fit with the card's title and notes above. A short screen (a
   // phone on its side) can't show those too, so there the table alone fits.
-  const withChrome = Math.floor((screenHeight - fixedHeight) / ROW_HEIGHT);
-  const tableOnly = Math.floor((screenHeight - fixedHeight + PAGE_CHROME - spacing.md) / ROW_HEIGHT);
+  const withChrome = Math.floor((screenHeight - fixedHeight) / rowHeight);
+  const tableOnly = Math.floor((screenHeight - fixedHeight + PAGE_CHROME - spacing.md) / rowHeight);
   const pageSize = Math.min(25, withChrome >= 3 ? withChrome : Math.max(2, tableOnly));
   const table = useTableRows(props, pageSize);
   const { sorted, current, pages, visible } = table;
@@ -375,46 +402,6 @@ function FittedTable<T>(props: DataTableProps<T> & { screenHeight: number }) {
   return (
     <View style={styles.container}>
       <Toolbar table={table} searchPlaceholder={searchPlaceholder} toolbar={toolbar} />
-
-      <View style={[styles.table, { borderColor: colors.border }]} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
-        <View style={[styles.row, styles.headerRow, { backgroundColor: colors.surfaceMuted, borderBottomColor: colors.border }]}>
-          {first ? <HeaderCell column={first} table={table} style={firstStyle(first)} /> : null}
-          {shown.map(({ column, width: w }, i) => (
-            <HeaderCell key={column.key} column={column} table={table} style={cellStyle(column, w, shown[i + 1]?.column)} />
-          ))}
-        </View>
-
-        {visible.map((row, index) => (
-          <Pressable
-            key={rowKey(row)}
-            disabled={!onRowPress}
-            onPress={() => onRowPress?.(row)}
-            accessibilityRole={onRowPress ? 'button' : undefined}
-            style={({ pressed }) => [
-              styles.row,
-              styles.fittedRow,
-              {
-                borderBottomColor: colors.border,
-                backgroundColor: pressed ? colors.primarySoft : index % 2 === 1 ? colors.surfaceMuted : colors.surface,
-              },
-            ]}
-          >
-            {first ? <BodyCell column={first} row={row} style={firstStyle(first)} lines={2} /> : null}
-            {shown.map(({ column, width: w }, i) => (
-              <BodyCell key={column.key} column={column} row={row} style={cellStyle(column, w, shown[i + 1]?.column)} lines={2} />
-            ))}
-          </Pressable>
-        ))}
-
-        {visible.length === 0 ? (
-          <View style={styles.empty}>
-            <Text muted>{table.query ? `Nothing matches “${table.query}”.` : emptyText}</Text>
-          </View>
-        ) : pages > 1 && visible.length < pageSize ? (
-          // The last page keeps the table's height, so the buttons stay where they were.
-          <View style={{ height: (pageSize - visible.length) * ROW_HEIGHT }} />
-        ) : null}
-      </View>
 
       <View style={sideBySide ? styles.footersSideBySide : styles.container}>
         {paged ? (
@@ -438,6 +425,54 @@ function FittedTable<T>(props: DataTableProps<T> & { screenHeight: number }) {
           </Text>
           <PagerButton icon="chevron-down" label="Next rows" disabled={current >= pages - 1} onPress={() => table.setPage(current + 1)} />
         </View>
+      </View>
+
+      <View style={[styles.table, { borderColor: colors.border }]} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
+        <View
+          style={[styles.row, styles.headerRow, { backgroundColor: colors.surfaceMuted, borderBottomColor: colors.border }]}
+          onLayout={(event) => {
+            // Read the height now: on Android the event is emptied once this handler returns, before React runs the update.
+            const height = Math.ceil(event.nativeEvent.layout.height);
+            noteHeight('header', height);
+          }}
+        >
+          {first ? <HeaderCell column={first} table={table} style={firstStyle(first)} /> : null}
+          {shown.map(({ column, width: w }, i) => (
+            <HeaderCell key={column.key} column={column} table={table} style={cellStyle(column, w, shown[i + 1]?.column)} />
+          ))}
+        </View>
+
+        {visible.map((row, index) => (
+          <Pressable
+            key={rowKey(row)}
+            disabled={!onRowPress}
+            onPress={() => onRowPress?.(row)}
+            accessibilityRole={onRowPress ? 'button' : undefined}
+            onLayout={(event) => {
+              const height = Math.ceil(event.nativeEvent.layout.height);
+              noteHeight('row', height);
+            }}
+            style={({ pressed }) => [
+              styles.row,
+              styles.fittedRow,
+              {
+                borderBottomColor: colors.border,
+                backgroundColor: pressed ? colors.primarySoft : index % 2 === 1 ? colors.surfaceMuted : colors.surface,
+              },
+            ]}
+          >
+            {first ? <BodyCell column={first} row={row} style={firstStyle(first)} /> : null}
+            {shown.map(({ column, width: w }, i) => (
+              <BodyCell key={column.key} column={column} row={row} style={cellStyle(column, w, shown[i + 1]?.column)} />
+            ))}
+          </Pressable>
+        ))}
+
+        {visible.length === 0 ? (
+          <View style={styles.empty}>
+            <Text muted>{table.query ? `Nothing matches “${table.query}”.` : emptyText}</Text>
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -471,7 +506,7 @@ const styles = StyleSheet.create({
   search: { flexGrow: 1, flexBasis: 240, maxWidth: 420 },
   table: { borderWidth: 1, borderRadius: 10, overflow: 'hidden' },
   row: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, minHeight: 44 },
-  fittedRow: { height: ROW_HEIGHT, minHeight: ROW_HEIGHT },
+  fittedRow: { minHeight: ROW_HEIGHT },
   headerRow: { minHeight: 38, alignItems: 'stretch' },
   headerCell: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   cell: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, justifyContent: 'center' },
@@ -495,6 +530,7 @@ const styles = StyleSheet.create({
   sortable: { cursor: 'pointer' },
   empty: { padding: spacing.xl, alignItems: 'center' },
   footer: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  topPager: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginLeft: 'auto' },
   footersSideBySide: { flexDirection: 'row', gap: spacing.xl },
   footerText: { flex: 1 },
 });

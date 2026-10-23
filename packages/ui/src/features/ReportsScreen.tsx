@@ -547,8 +547,8 @@ function RefillDue({ rhythms }: { rhythms: RefillRhythm[] }) {
           >
             <View style={styles.refillText}>
               <View style={styles.flex}>
-                <Text numberOfLines={1}>{r.customer.name}</Text>
-                <Text variant="small" muted numberOfLines={2}>
+                <Text>{r.customer.name}</Text>
+                <Text variant="small" muted>
                   {`Every ${dayCount(r.usualGap)} · last bought ${formatDay(r.lastDay)}${r.customer.phone ? ` · ${r.customer.phone}` : ''}`}
                 </Text>
               </View>
@@ -639,8 +639,8 @@ function OneCustomer({
               renderItem={(c) => (
                 <View style={[styles.listRow, { borderBottomColor: colors.border }]}>
                   <View style={styles.flex}>
-                    <Text numberOfLines={1}>{formatDay(localDay(c.entry.occurredAt))}</Text>
-                    <Text variant="small" muted numberOfLines={1}>
+                    <Text>{formatDay(localDay(c.entry.occurredAt))}</Text>
+                    <Text variant="small" muted>
                       {[receipt(c.entry.saleId) ? `Receipt ${receipt(c.entry.saleId)}` : '', c.left < c.entry.amount ? `part of ${formatPeso(c.entry.amount)} paid` : '']
                         .filter(Boolean)
                         .join(' · ') || 'Sale on credit'}
@@ -665,8 +665,8 @@ function OneCustomer({
               renderItem={(c) => (
                 <View style={[styles.listRow, { borderBottomColor: colors.border }]}>
                   <View style={styles.flex}>
-                    <Text numberOfLines={1}>{productName(c.productId)}</Text>
-                    <Text variant="small" muted numberOfLines={1}>
+                    <Text>{productName(c.productId)}</Text>
+                    <Text variant="small" muted>
                       {`Lent ${formatDay(localDay(c.entry.occurredAt))}`}
                     </Text>
                   </View>

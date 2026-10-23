@@ -5,13 +5,14 @@ type FieldErrors<V> = Partial<Record<keyof V & string, string>>;
 
 function check<S extends z.ZodType>(schema: S, values: z.input<S>) {
   const result = schema.safeParse(values);
-  if (result.success) return { data: result.data as z.output<S>, errors: {} as FieldErrors<z.input<S>> };
+  // `ok` rather than a null check: some schemas turn valid input into null, such as a blank down payment.
+  if (result.success) return { ok: true as const, data: result.data as z.output<S>, errors: {} as FieldErrors<z.input<S>> };
   const errors: FieldErrors<z.input<S>> = {};
   for (const issue of result.error.issues) {
     const field = issue.path[0];
     if (typeof field === 'string' && !(field in errors)) errors[field as keyof z.input<S> & string] = issue.message;
   }
-  return { data: null, errors };
+  return { ok: false as const, data: null, errors };
 }
 
 /**
@@ -36,7 +37,7 @@ export function useZodForm<S extends z.ZodType>(schema: S, initial: z.input<S>) 
     setSubmitted(true);
     const result = check(schema, values);
     setErrors(result.errors);
-    if (result.data !== null) await onValid(result.data);
+    if (result.ok) await onValid(result.data);
   };
 
   const reset = useCallback((next: z.input<S>) => {

@@ -173,8 +173,8 @@ export function DashboardScreen({
                       color={t.state === 'mismatch' ? colors.danger : colors.primary}
                     />
                     <View style={styles.flex}>
-                      <Text numberOfLines={1}>{productName(t.productId)}</Text>
-                      <Text variant="small" muted numberOfLines={1}>
+                      <Text>{productName(t.productId)}</Text>
+                      <Text variant="small" muted>
                         {t.state === 'mismatch' ? `${placeName(t.toId)} counted ${t.arrived} of ${t.qty}: settle it` : `From ${placeName(t.fromId)}: count and accept it`}
                       </Text>
                     </View>
@@ -205,11 +205,11 @@ export function DashboardScreen({
                   >
                     <Icon name={claim.kind === 'return' ? 'return-down-back-outline' : 'construct-outline'} color={colors.warning} />
                     <View style={styles.flex}>
-                      <Text numberOfLines={1}>
+                      <Text>
                         {CLAIM_LABELS[claim.kind]}
                         {claim.customerName ? ` · ${claim.customerName}` : ''}
                       </Text>
-                      <Text variant="small" muted numberOfLines={1}>
+                      <Text variant="small" muted>
                         {claim.kind === 'return' ? claim.items.map((i) => `${i.qty} × ${i.name}`).join(', ') : defectiveItemText(claim)}
                       </Text>
                     </View>
@@ -242,8 +242,8 @@ export function DashboardScreen({
                     >
                       <Icon name="document-text-outline" color={due ? colors.danger : colors.textMuted} />
                       <View style={styles.flex}>
-                        <Text numberOfLines={1}>{c.entry.borrowerName}</Text>
-                        <Text variant="small" muted numberOfLines={1}>
+                        <Text>{c.entry.borrowerName}</Text>
+                        <Text variant="small" muted>
                           {c.cheque.bank} no. {c.cheque.number}
                         </Text>
                       </View>
@@ -289,7 +289,7 @@ export function DashboardScreen({
                         canAdjust && styles.clickable,
                       ]}
                     >
-                      <Text style={styles.flex} numberOfLines={1} color={none ? colors.danger : undefined} weight={none ? '600' : undefined}>
+                      <Text style={styles.flex} color={none ? colors.danger : undefined} weight={none ? '600' : undefined}>
                         {p.name}
                       </Text>
                       <Badge label={none ? 'Out of stock' : `${left(p)} left`} tone={none ? 'danger' : 'warning'} icon={none ? 'alert-circle-outline' : undefined} />
@@ -321,7 +321,7 @@ export function DashboardScreen({
                 <Text muted style={styles.time}>
                   {formatTime(sale.createdAt)}
                 </Text>
-                <Text style={styles.flex} numberOfLines={1}>
+                <Text style={styles.flex}>
                   {sale.borrowerName ? `${sale.borrowerName}: ` : ''}
                   {sale.lines.map((l) => `${l.qty}× ${l.name}`).join(', ')}
                 </Text>
@@ -370,7 +370,7 @@ export function DashboardScreen({
                   {formatTime(claim.decidedAt ?? claim.createdAt)}
                 </Text>
                 <Icon name={claim.kind === 'return' ? 'return-down-back-outline' : 'construct-outline'} color={colors.textMuted} />
-                <Text style={styles.flex} numberOfLines={1}>
+                <Text style={styles.flex}>
                   {CLAIM_LABELS[claim.kind]}
                   {claim.customerName ? ` · ${claim.customerName}` : ''}
                   {': '}

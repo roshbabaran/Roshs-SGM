@@ -12,9 +12,9 @@ interface MorePage {
   permission?: Permission;
 }
 
-/** Pages that don't fit in the tab bar, in order. Only the ones this person may use are listed. */
+/** Pages that don't fit in the tab bar, in order and named as in SGM Desk's menu. Only the ones this person may use are listed. */
 const MORE_PAGES: MorePage[] = [
-  { href: '/more/inventory', label: 'Stock', icon: 'cube-outline', permission: 'inventory.view' },
+  { href: '/more/inventory', label: 'Inventory', icon: 'cube-outline', permission: 'inventory.view' },
   { href: '/more/sales', label: 'Transactions', icon: 'receipt-outline', permission: 'sales.view' },
   { href: '/more/reports', label: 'Reports', icon: 'bar-chart-outline', permission: 'reports.view' },
   { href: '/more/products', label: 'Products', icon: 'pricetags-outline', permission: 'products.manage' },

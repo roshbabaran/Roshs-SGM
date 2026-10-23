@@ -81,9 +81,9 @@ export function SalesScreen() {
       text: (s) => `${itemsText(s)} ${claimNote(s)}`,
       render: (s) => (
         <View style={styles.cellText}>
-          <Text numberOfLines={1}>{itemsText(s)}</Text>
+          <Text>{itemsText(s)}</Text>
           {claimNote(s) ? (
-            <Text variant="small" muted numberOfLines={1}>
+            <Text variant="small" muted>
               {claimNote(s)}
             </Text>
           ) : null}

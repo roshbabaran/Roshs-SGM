@@ -133,7 +133,7 @@ export function UsersScreen() {
       flex: 1.6,
       text: (d) => d.id,
       render: (d) => (
-        <Text variant="small" style={{ fontFamily: monoFont }} numberOfLines={1} selectable>
+        <Text variant="small" style={{ fontFamily: monoFont }} selectable>
           {d.id}
         </Text>
       ),

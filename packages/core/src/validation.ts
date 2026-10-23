@@ -140,7 +140,9 @@ export function downPaymentSchema(total: Centavos) {
     .superRefine((value, ctx) => {
       if (!value.amount) return;
       const amount = parsePeso(value.amount);
-      if (amount === null || amount <= 0) {
+      // 0 is the same as blank: nothing paid now, so no method or reference is needed.
+      if (amount === 0) return;
+      if (amount === null || amount < 0) {
         ctx.addIssue({ code: 'custom', path: ['amount'], message: 'Enter the amount paid now, or leave it blank' });
       } else if (amount >= total) {
         ctx.addIssue({ code: 'custom', path: ['amount'], message: `Enter less than ${formatPeso(total)}. A sale paid in full is made in the Sell window` });

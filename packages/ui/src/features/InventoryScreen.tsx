@@ -79,7 +79,7 @@ function ChangeLines({ product, change }: { product: Product | undefined; change
   return (
     <View>
       {changeParts(product, change).map(({ line, amount }) => (
-        <Text key={line} variant="small" numeric muted={amount === 0} numberOfLines={1}>
+        <Text key={line} variant="small" numeric muted={amount === 0}>
           {line}
         </Text>
       ))}
@@ -91,7 +91,7 @@ function ChangeLines({ product, change }: { product: Product | undefined; change
 function BeforeAfter({ product, change }: { product: Product | undefined; change: LevelChange }) {
   const { before, after } = change;
   const row = (label: string, from: number, to: number) => (
-    <Text key={label} variant="small" numeric muted={from === to} weight={from === to ? '400' : '600'} numberOfLines={1}>
+    <Text key={label} variant="small" numeric muted={from === to} weight={from === to ? '400' : '600'}>
       {label ? `${label} ` : ''}
       {from} → {to}
     </Text>
