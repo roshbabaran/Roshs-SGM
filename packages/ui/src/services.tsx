@@ -75,7 +75,10 @@ export interface ReceiptScanner {
   sources: PhotoSource[];
   /** Asks for a photo; resolves null when the person cancels. */
   pickPhoto(source: PhotoSource): Promise<ScanPhoto | null>;
-  /** Finds and reads every line of writing. Rejects with a message for the person when it can't. */
+  /**
+   * Finds and reads every line of writing on a receipt, with a second look at handwriting (readReceiptText in
+   * @sgm/core). Rejects with a message for the person when it can't.
+   */
   readText(image: PixelImage): Promise<TextResult>;
 }
 

@@ -255,6 +255,16 @@ export interface Sale {
   claimCode?: string;
   /** The number printed on the handwritten receipt the sale was scanned from. */
   slipNo?: string;
+  /**
+   * The name written on a scanned receipt ("Registered Name:"), as written. It
+   * is kept even when it matches no customer; borrowerId links one only when
+   * the name matched exactly or the cashier picked the customer.
+   */
+  registeredName?: string;
+  /** When the sale was entered, for a sale entered after it happened (a scanned receipt); createdAt is when it happened. */
+  recordedAt?: ISODate;
+  /** The receipt gave no time, so createdAt's time of day was set by the app (see saleTimeFor). */
+  timeEstimated?: boolean;
   voidReason?: string;
   voidedBy?: string;
   voidedAt?: ISODate;

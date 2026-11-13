@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 
-import { createOcrEngine, readText, type OcrEngine, type OcrModel, type OcrRuntime, type PixelImage, type Tensor, type TextResult } from '@sgm/core';
+import { createOcrEngine, readReceiptText, type OcrEngine, type OcrModel, type OcrRuntime, type PixelImage, type Tensor, type TextResult } from '@sgm/core';
 
 const MODELS = { det: 'PP-OCRv6_small_det', rec: 'PP-OCRv6_small_rec' } as const;
 /** Largest photo side accepted from the screens (they send at most 1600). */
@@ -159,7 +159,8 @@ export function createOcrReader(): { read(image: PixelImage): Promise<TextResult
   const read = async (image: PixelImage): Promise<TextResult> => {
     if (idle) clearTimeout(idle);
     try {
-      return await readText(image, engine ?? start());
+      // Every line, then a second, closer look at handwriting the first read may have missed or misread.
+      return await readReceiptText(image, engine ?? start());
     } catch (error) {
       // Start afresh next time, in case the worker is what failed.
       close();

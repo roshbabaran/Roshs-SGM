@@ -21,21 +21,35 @@ import { DateField } from '../DateField';
 import { Dialog } from '../Dialog';
 import { Icon } from '../Icon';
 import { Select } from '../Select';
-import { useCollection, useWork } from '../services';
+import { useCollection, useServices, useWork } from '../services';
 import { Text } from '../Text';
 import { TextField } from '../TextField';
 import { spacing, useTheme } from '../theme';
 import { useToast } from '../Toast';
 import { useZodForm } from '../useZodForm';
+import { ReceiptScanDialog } from './ReceiptScanDialog';
 import { ReceiptDialog } from './receipts';
 
 const itemsText = (sale: Sale) => sale.lines.map((l) => `${l.qty}× ${l.name}`).join(', ');
+
+/** The customer, and the name written on a scanned receipt when it is different. */
+const namesOf = (sale: Sale): { name: string; written?: string } => {
+  const written = sale.registeredName;
+  if (!sale.borrowerName) return { name: written ?? '' };
+  return written && written.toLowerCase() !== sale.borrowerName.toLowerCase() ? { name: sale.borrowerName, written } : { name: sale.borrowerName };
+};
+
+/** A sale entered after it happened: when it happened, whether its time was on the receipt, and when it was entered. */
+const timeNote = (sale: Sale): string =>
+  [sale.timeEstimated ? 'Time not on receipt' : '', sale.recordedAt ? `Entered ${formatDateTime(sale.recordedAt)}` : ''].filter(Boolean).join(' · ');
 
 const ANY_CUSTOMER = 'any';
 const NO_CUSTOMER = 'none';
 
 export function SalesScreen() {
   const work = useWork();
+  const { ocr } = useServices();
+  const toast = useToast();
   const { colors } = useTheme();
   const { data: sales } = useCollection<Sale>('sales');
   const { data: users } = useCollection<User>('users');
@@ -47,6 +61,8 @@ export function SalesScreen() {
   const [to, setTo] = useState(today);
   const [selected, setSelected] = useState<Sale | null>(null);
   const [voiding, setVoiding] = useState<Sale | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const canScan = !!ocr && work.can('pos.sell');
 
   const rows = sales
     .filter((s) => s.locationId === work.locationId)
@@ -72,8 +88,40 @@ export function SalesScreen() {
 
   const columns: Column<Sale>[] = [
     { key: 'receipt', title: 'Receipt', width: 150, text: (s) => s.receiptNo },
-    { key: 'time', title: 'Time', width: 180, text: (s) => formatDateTime(s.createdAt), sortValue: (s) => s.createdAt },
-    { key: 'customer', title: 'Customer', width: 170, text: (s) => s.borrowerName ?? '' },
+    {
+      key: 'time',
+      title: 'Time',
+      width: 180,
+      text: (s) => `${formatDateTime(s.createdAt)} ${timeNote(s)}`,
+      sortValue: (s) => s.createdAt,
+      render: (s) => (
+        <View style={styles.cellText}>
+          <Text>{formatDateTime(s.createdAt)}</Text>
+          {timeNote(s) ? (
+            <Text variant="small" muted>
+              {timeNote(s)}
+            </Text>
+          ) : null}
+        </View>
+      ),
+    },
+    {
+      key: 'customer',
+      title: 'Customer',
+      width: 170,
+      // Searching by name finds the name written on a scanned receipt too.
+      text: (s) => [namesOf(s).name, namesOf(s).written].filter(Boolean).join(' '),
+      render: (s) => (
+        <View style={styles.cellText}>
+          <Text>{namesOf(s).name}</Text>
+          {namesOf(s).written ? (
+            <Text variant="small" muted>
+              {`Written: ${namesOf(s).written}`}
+            </Text>
+          ) : null}
+        </View>
+      ),
+    },
     {
       key: 'items',
       title: 'Items',
@@ -109,7 +157,11 @@ export function SalesScreen() {
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
-      <ScreenHeader title="Transactions" subtitle={`${work.location?.name ?? ''} · ${completed.length} sales · ${formatPeso(total)}`} />
+      <ScreenHeader
+        title="Transactions"
+        subtitle={`${work.location?.name ?? ''} · ${completed.length} sales · ${formatPeso(total)}`}
+        actions={canScan ? <Button title="Scan receipt" icon="scan-outline" variant="secondary" size="sm" onPress={() => setScanning(true)} /> : null}
+      />
       <Card padded>
         <View style={styles.filters}>
           <View style={styles.dateField}>
@@ -136,7 +188,7 @@ export function SalesScreen() {
           columns={columns}
           rowKey={(s) => s.id}
           onRowPress={setSelected}
-          searchPlaceholder="Search receipts, customers, items or cashier"
+          searchPlaceholder="Search receipts, names, items or cashier"
           emptyText={customerId === ANY_CUSTOMER ? 'No sales on these dates.' : 'No sales for this customer on these dates. Try a wider date range.'}
           minWidth={1180}
         />
@@ -160,6 +212,20 @@ export function SalesScreen() {
         }
       />
       <VoidDialog sale={voiding} onClose={() => setVoiding(null)} />
+      {canScan ? (
+        <ReceiptScanDialog
+          visible={scanning}
+          onClose={() => setScanning(false)}
+          onSaved={(sale) => {
+            setScanning(false);
+            // Show the sale it saved, even when it is dated before the days on screen.
+            const day = localDay(sale.createdAt);
+            if (day < from) setFrom(day);
+            if (day > to) setTo(day);
+            toast.show(`Sale ${sale.receiptNo} saved from the receipt.`, 'success');
+          }}
+        />
+      ) : null}
     </ScrollView>
   );
 }

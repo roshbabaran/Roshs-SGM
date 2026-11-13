@@ -5,12 +5,13 @@
  */
 import { isBorrowingSale, priceCart, productUnits, saleMovements, saleUnits, stockChanges, type CartLine } from './cart';
 import { ALLOW_NEGATIVE_STOCK } from './config';
-import { localDay, parseDay } from './dates';
+import { isValidDay, localDay, parseDay } from './dates';
 import { claimCode, shortId, uuid } from './ids';
 import { levelOf, NO_STOCK, stockByProduct, type StockLevel } from './ledger';
 import type {
   Customer,
   DeviceSettings,
+  ISODate,
   LoanEntry,
   Location,
   MetaRecord,
@@ -157,11 +158,38 @@ export function loanEntry(
 
 const RECEIPT_SEQ_ID = 'receipt-seq';
 
+/** How far ahead of this device's clock a sale time may be, for clocks a little apart. */
+export const CLOCK_SKEW_MS = 5 * 60_000;
+
+/**
+ * When a sale entered from a receipt happened. A time written on the receipt
+ * or typed by the cashier ("HH:MM", 24-hour) is used as it is. Without one, a
+ * sale dated today gets the time it is saved (11:59 PM would be in the future,
+ * and this keeps today's sales in the order they were entered), and a sale
+ * from an earlier day gets 11:59 PM local time on that day, so it falls on
+ * the right day in every daily report. Either way `timeEstimated` is true.
+ */
+export function saleTimeFor(day: string, time: string | null, now: Date = new Date()): { soldAt: ISODate; timeEstimated: boolean } {
+  if (!isValidDay(day)) throw new Error('Enter the date of the sale.');
+  const at = parseDay(day);
+  if (time) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim());
+    const hours = match ? parseInt(match[1], 10) : NaN;
+    const minutes = match ? parseInt(match[2], 10) : NaN;
+    if (!(hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59)) throw new Error('Enter the time like 2:30 PM, or leave it empty.');
+    at.setHours(hours, minutes, 0, 0);
+    return { soldAt: at.toISOString(), timeEstimated: false };
+  }
+  if (day === localDay(now)) return { soldAt: now.toISOString(), timeEstimated: true };
+  at.setHours(23, 59, 0, 0);
+  return { soldAt: at.toISOString(), timeEstimated: true };
+}
+
 /**
  * Checks the number of a handwritten receipt before a sale keeps it: the same
  * number can't be entered twice at one branch (a voided sale doesn't count).
- * The Sell screen checks it when a scan is confirmed, while the number can
- * still be corrected, and recordSale checks it again.
+ * The scan window checks it while the number can still be corrected, and
+ * recordSale checks it again.
  */
 export async function checkSlipNo(ctx: OpContext, slipNo: string): Promise<void> {
   if (slipNo.length > 40) throw new Error('The receipt number is too long.');
@@ -188,6 +216,16 @@ export interface SaleInput {
   customer?: CustomerRef;
   /** The number of the handwritten receipt the cart was scanned from. */
   slipNo?: string;
+  /** The name written on a scanned receipt. Kept on the sale as written; it never adds a customer. */
+  registeredName?: string;
+  /**
+   * When the sale happened, for one entered afterwards from a receipt
+   * (saleTimeFor). It becomes the sale's createdAt, and the time of its stock
+   * movements and account entries; it can't be in the future. Defaults to now.
+   */
+  soldAt?: ISODate;
+  /** soldAt's time of day was chosen by the app because the receipt gave none. */
+  timeEstimated?: boolean;
   /** Paid now and picked up later (Claims window): no stock leaves the shelf yet. */
   prepaid?: boolean;
   /** Sales on credit: the part the customer pays now. The rest goes on their account. */
@@ -201,13 +239,26 @@ export interface SaleInput {
  * owe, and each borrowed cylinder is noted until it comes back. A prepaid
  * order is paid now and its stock leaves the shelf when it is picked up. A sale
  * scanned from a handwritten receipt keeps the receipt's number (`slipNo`), and
- * the same number can't be entered twice at one branch.
+ * the same number can't be entered twice at one branch. It also keeps the name
+ * written on it (`registeredName`) and when it happened (`soldAt`), which can
+ * be earlier than when it is entered (`recordedAt`).
  */
 export async function recordSale(ctx: OpContext, input: SaleInput): Promise<Sale> {
   const user = ctx.user;
   assertCan(user, 'pos.sell');
   if (input.cart.length === 0) throw new Error('The cart is empty.');
   const slipNo = input.slipNo?.trim() || undefined;
+  const registeredName = input.registeredName ? tidyName(input.registeredName) || undefined : undefined;
+  if (registeredName && registeredName.length > 120) throw new Error('The name on the receipt is too long.');
+  const nowDate = ctx.now?.() ?? new Date();
+  const now = nowDate.toISOString();
+  let at = now;
+  if (input.soldAt !== undefined) {
+    const sold = new Date(input.soldAt);
+    if (Number.isNaN(sold.getTime())) throw new Error('The date of the sale is not a valid date.');
+    if (sold.getTime() > nowDate.getTime() + CLOCK_SKEW_MS) throw new Error("The sale's date and time can't be in the future.");
+    at = sold.toISOString();
+  }
   const onAccount = input.payment.method === 'credit';
   const lendsCylinder = input.cart.some((line) => line.type === 'borrow');
   if ((onAccount || lendsCylinder) && !input.customer) throw new Error('Choose who is borrowing.');
@@ -231,7 +282,6 @@ export async function recordSale(ctx: OpContext, input: SaleInput): Promise<Sale
     ctx.store.list<ProductSet>('sets'),
     ctx.store.list<StockMovement>('movements'),
   ]);
-  const now = (ctx.now?.() ?? new Date()).toISOString();
   const customer = input.customer ? await resolveCustomer(ctx, input.customer, now) : null;
   const byId = new Map(products.map((p) => [p.id, p]));
   const setsById = new Map(sets.map((s) => [s.id, s]));
@@ -262,21 +312,24 @@ export async function recordSale(ctx: OpContext, input: SaleInput): Promise<Sale
     status: 'completed',
     ...(borrower ? { borrowerId: borrower.borrower.id, borrowerName: borrower.borrower.name } : {}),
     ...(slipNo ? { slipNo } : {}),
+    ...(registeredName ? { registeredName } : {}),
     ...(input.prepaid ? { prepaid: true, claimCode: claimCode() } : {}),
-    createdAt: now,
+    createdAt: at,
+    ...(input.soldAt !== undefined ? { recordedAt: now, ...(input.timeEstimated ? { timeEstimated: true } : {}) } : {}),
     receivedAt: null,
   };
 
   const loans: LoanEntry[] = [];
   if (borrower && isBorrowingSale(sale)) {
-    if (onAccount) loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'credit', amount: total, saleId: sale.id }, now));
+    // The account entries happen when the sale did.
+    if (onAccount) loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'credit', amount: total, saleId: sale.id }, at));
     if (onAccount && down) {
-      loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'payment', amount: -down.amount, payment: down, saleId: sale.id }, now));
+      loans.push(loanEntry(ctx, user, borrower.borrower, { kind: 'payment', amount: -down.amount, payment: down, saleId: sale.id }, at));
     }
     for (const unit of saleUnits(sale)) {
       if (unit.type !== 'borrow') continue;
       loans.push(
-        loanEntry(ctx, user, borrower.borrower, { kind: 'cylinder_out', amount: 0, productId: unit.productId, qty: unit.qty, saleId: sale.id }, now),
+        loanEntry(ctx, user, borrower.borrower, { kind: 'cylinder_out', amount: 0, productId: unit.productId, qty: unit.qty, saleId: sale.id }, at),
       );
     }
   }

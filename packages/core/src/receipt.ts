@@ -100,7 +100,7 @@ export function buildReceipt(sale: Sale, names: { locationName: string; cashierN
     dateTime: formatDateTime(sale.createdAt),
     locationName: names.locationName,
     cashierName: names.cashierName,
-    customer: sale.borrowerName,
+    customer: sale.borrowerName ?? sale.registeredName,
     ...(sale.claimCode ? { claimCode: sale.claimCode } : {}),
     lines: sale.lines.map(receiptLine),
     total: formatPeso(sale.total),

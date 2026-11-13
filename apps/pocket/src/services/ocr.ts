@@ -5,7 +5,7 @@
  * development build (`npx expo run:android`); in Expo Go the Scan button is
  * hidden. The reader itself is in packages/core/src/ocr.
  */
-import { createOcrEngine, readText, type OcrEngine, type OcrRuntime, type PixelImage } from '@sgm/core';
+import { createOcrEngine, readReceiptText, type OcrEngine, type OcrRuntime, type PixelImage } from '@sgm/core';
 import type { PhotoSource, ReceiptScanner, ScanPhoto } from '@sgm/ui';
 import { Asset } from 'expo-asset';
 import { File, Paths } from 'expo-file-system';
@@ -153,7 +153,8 @@ export function createPocketScanner(): ReceiptScanner | undefined {
         engine = null;
         throw new Error(`Receipt reading couldn't start on this phone. ${messageOf(e)}`);
       });
-      return readText(image, await engine);
+      // Every line, then a second, closer look at handwriting the first read may have missed or misread.
+      return readReceiptText(image, await engine);
     },
   };
 }

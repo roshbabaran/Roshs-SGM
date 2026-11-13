@@ -232,6 +232,55 @@ function sample(
   return top + (bottom - top) * fy;
 }
 
+// --- Stage 2: ink only --------------------------------------------------------
+
+/** Percentiles of the ink-only values that become black and white. */
+export const INK_STRETCH = { lo: 0.01, hi: 0.9 };
+
+/**
+ * The photo as grey "ink on paper": each pixel becomes the smaller of its red
+ * and blue values. Black, blue and red pens stay dark (each is low in red or
+ * blue), while pink and magenta print or speckle, high in both, turns as pale
+ * as the paper. The values are then stretched so the darkest 1% becomes black
+ * and the lightest 10% white. Written as grey to all three colour channels;
+ * alpha is kept.
+ */
+export function inkOnly(image: PixelImage, stretch = INK_STRETCH): PixelImage {
+  const src = image.data;
+  const n = image.width * image.height;
+  // min(R, B) doesn't depend on whether the pixel is RGBA or BGRA.
+  const ink = new Uint8Array(n);
+  const counts = new Uint32Array(256);
+  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    const v = src[i] < src[i + 2] ? src[i] : src[i + 2];
+    ink[p] = v;
+    counts[v] += 1;
+  }
+  const at = (share: number): number => {
+    const target = Math.min(n - 1, Math.max(0, Math.floor(share * n)));
+    let seen = 0;
+    for (let v = 0; v < 256; v += 1) {
+      seen += counts[v];
+      if (seen > target) return v;
+    }
+    return 255;
+  };
+  const lo = at(stretch.lo);
+  const hi = at(stretch.hi);
+  const scale = hi > lo ? 255 / (hi - lo) : 1;
+  const map = new Uint8ClampedArray(256);
+  for (let v = 0; v < 256; v += 1) map[v] = hi > lo ? (v - lo) * scale : v;
+  const out = new Uint8ClampedArray(n * 4);
+  for (let p = 0, i = 0; p < n; p += 1, i += 4) {
+    const v = map[ink[p]];
+    out[i] = v;
+    out[i + 1] = v;
+    out[i + 2] = v;
+    out[i + 3] = src[i + 3];
+  }
+  return { width: image.width, height: image.height, data: out, format: image.format };
+}
+
 // --- Helpers for the apps ---------------------------------------------------
 
 /**

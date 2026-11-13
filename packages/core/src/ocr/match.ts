@@ -92,6 +92,10 @@ const PRICE_MATCH = 0.6;
 
 interface Scored {
   target: DraftTarget;
+  /** How well the written words and size fit, without the price. */
+  text: number;
+  /** The written price is this product's price, sold this way. */
+  priced: boolean;
   score: number;
   /** Set when the price says refill but the words say new, or the other way round. */
   conflict?: string;
@@ -102,38 +106,51 @@ function sameTarget(a: DraftTarget | null, b: DraftTarget | null): boolean {
   return a.kind === 'product' ? b.kind === 'product' && a.productId === b.productId : b.kind === 'set' && a.setId === b.setId;
 }
 
+function scored(target: DraftTarget, text: number, priced: boolean, conflict?: string): Scored {
+  return { target, text, priced, score: text + (priced ? PRICE_MATCH : 0), ...(conflict ? { conflict } : {}) };
+}
+
 function scoreProduct(product: Product, written: string[], size: number | null, hint: 'refill' | 'new' | null, clues: LineClues): Scored {
   const name = nameWords(normalizeItemText(`${product.brand ?? ''} ${product.name}`));
-  let score = textScore(written, name) + sizeScore(size, product.sizeKg ?? null);
+  const text = textScore(written, name) + sizeScore(size, product.sizeKg ?? null);
   if (product.kind === 'accessory') {
-    if (clues.prices.includes(product.price)) score += PRICE_MATCH;
-    return { target: { kind: 'product', productId: product.id, type: 'item' }, score };
+    return scored({ kind: 'product', productId: product.id, type: 'item' }, text, clues.prices.includes(product.price));
   }
   let type: 'refill' | 'new' = hint ?? 'refill';
   let conflict: string | undefined;
+  let priced = false;
   if (clues.prices.length > 0) {
     const refill = unitPrice(product, 'refill');
     const fresh = unitPrice(product, 'new');
-    const priced = clues.prices.includes(refill) ? 'refill' : clues.prices.includes(fresh) ? 'new' : null;
-    if (priced) {
-      score += PRICE_MATCH;
-      if (hint && hint !== priced) conflict = `Written as ${hint === 'new' ? 'a new cylinder' : 'a refill'}, but priced as ${priced === 'new' ? 'a new cylinder' : 'a refill'}.`;
-      type = priced;
+    const by = clues.prices.includes(refill) ? 'refill' : clues.prices.includes(fresh) ? 'new' : null;
+    if (by) {
+      priced = true;
+      if (hint && hint !== by) conflict = `Written as ${hint === 'new' ? 'a new cylinder' : 'a refill'}, but priced as ${by === 'new' ? 'a new cylinder' : 'a refill'}.`;
+      type = by;
     }
   }
-  return { target: { kind: 'product', productId: product.id, type }, score, conflict };
+  return scored({ kind: 'product', productId: product.id, type }, text, priced, conflict);
 }
 
 function scoreSet(set: ProductSet, written: string[], size: number | null, clues: LineClues): Scored {
   const normalized = normalizeItemText(set.name);
-  let score = textScore(written, nameWords(normalized));
+  let text = textScore(written, nameWords(normalized));
   const setSize = itemSize(normalized);
-  if (size !== null && setSize !== null) score += sizeScore(size, setSize);
-  if (clues.prices.includes(set.price)) score += PRICE_MATCH;
-  return { target: { kind: 'set', setId: set.id }, score };
+  if (size !== null && setSize !== null) text += sizeScore(size, setSize);
+  return scored({ kind: 'set', setId: set.id }, text, clues.prices.includes(set.price));
 }
 
-/** Finds the product or set an item line is, with how sure the match is. */
+/** Two scores this close count as a tie. */
+const TIE = 0.05;
+
+/**
+ * Finds the product or set an item line is, with how sure the match is. When
+ * the words fit several products equally (just "11kg", with several brands of
+ * 11 kg) or fit none, the written price decides: the one product whose refill
+ * or new price it is, which also says how it was sold. That match is marked
+ * for checking. When the price fits more than one too, or none, the line is
+ * left for the cashier, with the likeliest products first.
+ */
 export function matchItem(itemText: string, catalogue: Catalogue, clues: LineClues): ItemMatch {
   const normalized = normalizeItemText(itemText);
   const alias = catalogue.aliases?.[normalized];
@@ -147,18 +164,41 @@ export function matchItem(itemText: string, catalogue: Catalogue, clues: LineClu
   const byId = new Set(catalogue.products.map((p) => p.id));
   const sets = catalogue.sets.filter((s) => s.active && s.items.every((item) => byId.has(item.productId)));
 
-  const scored = [
-    ...products.map((p) => scoreProduct(p, written, size, hint, clues)),
-    ...sets.map((s) => scoreSet(s, written, size, clues)),
-  ].sort((a, b) => b.score - a.score);
+  const all = [...products.map((p) => scoreProduct(p, written, size, hint, clues)), ...sets.map((s) => scoreSet(s, written, size, clues))].sort(
+    (a, b) => b.score - a.score,
+  );
+  const candidatesOf = (first: Scored[]): DraftTarget[] => {
+    const rest = all.filter((s) => s.score > 0.2 && !first.includes(s));
+    return [...first, ...rest].slice(0, 6).map((s) => s.target);
+  };
 
-  const [best, second] = scored;
-  const candidates = scored.filter((s) => s.score > 0.2).slice(0, 4).map((s) => s.target);
+  // The words alone: do they single out one product?
+  const topText = Math.max(-Infinity, ...all.map((s) => s.text));
+  const tied = all.filter((s) => topText - s.text < TIE);
+  if (clues.prices.length > 0 && (topText < LIKELY || tied.length > 1)) {
+    const pool = topText < LIKELY ? all : tied;
+    const priced = pool.filter((s) => s.priced);
+    if (priced.length === 1) {
+      const [best] = priced;
+      return {
+        target: best.target,
+        status: 'check',
+        note: best.conflict ?? 'Picked by the written price. Check that this is the right product.',
+        candidates: candidatesOf([]).filter((c) => !sameTarget(c, best.target)),
+      };
+    }
+    if (priced.length > 1) {
+      return { target: null, status: 'missing', note: 'More than one product has this price. Pick the right one.', candidates: candidatesOf(priced) };
+    }
+  }
+
+  const [best, second] = all;
+  const candidates = candidatesOf([]);
   if (!best || best.score < LIKELY) {
     return { target: null, status: 'missing', note: 'Pick the product for this line.', candidates };
   }
   const lead = best.score - (second?.score ?? 0);
-  if (lead < 0.05) {
+  if (lead < TIE) {
     return { target: null, status: 'missing', note: 'More than one product fits. Pick the right one.', candidates };
   }
   const others = candidates.filter((c) => !sameTarget(c, best.target));

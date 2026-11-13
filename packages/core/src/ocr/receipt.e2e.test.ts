@@ -9,7 +9,8 @@ import { describe, expect, it } from 'vitest';
 
 import { createOcrEngine, type OcrEngine } from './engine';
 import { draftProblem, draftToCart, readReceipt } from './pipeline';
-import { CATALOGUE } from './test-helpers';
+import type { Catalogue } from './match';
+import { CATALOGUE, cylinder } from './test-helpers';
 import type { OcrRuntime, PixelImage } from './types';
 
 const MODELS = new URL('../../../../models/ocr/', import.meta.url);
@@ -94,4 +95,44 @@ describe('reading sample receipts with the real models', () => {
       expect(draftToCart(draft.lines)).toEqual(truth.lines.map((line) => ({ type: line.type, productId: line.productId, qty: line.qty })));
     }, 120_000);
   }
+});
+
+/** Three brands of 11 kg; only Petron's refill is ₱1,510, as written on the booklet photo. */
+const BOOKLET_STORE: Catalogue = {
+  products: [
+    cylinder('petron-11', 'Petron Gasul 11 kg', 'Petron', 11, 1510, 3200),
+    cylinder('solane-11', 'Solane 11 kg', 'Solane', 11, 1450, 3100),
+    cylinder('fiesta-11', 'Fiesta Gas 11 kg', 'Fiesta', 11, 1400, 3000),
+  ],
+  sets: [],
+};
+
+/**
+ * Photos of SGM's real booklet, cut to one part each: the printed red "№ 71901",
+ * and the item table with "11kg | 1 | | 1510" in blue ballpoint on
+ * pink-speckled paper.
+ */
+describe('reading the real booklet with the real models', () => {
+  const read = async (name: string, catalogue: Catalogue = CATALOGUE) => {
+    const setup = await (ready ??= setUp());
+    if (!setup) return null;
+    const decoded = setup.jpeg.decode(setup.fs.readFileSync(new URL(`${name}.jpg`, SAMPLES)), { useTArray: true, formatAsRGBA: true });
+    return readReceipt({ width: decoded.width, height: decoded.height, data: decoded.data }, setup.engine, catalogue, { today: '2026-11-10' });
+  };
+
+  it('reads the receipt number printed after "№"', async (ctx) => {
+    const draft = await read('booklet_number');
+    if (!draft) return ctx.skip();
+    expect(draft.receiptNo).toMatchObject({ value: '71901', status: 'ok' });
+  }, 120_000);
+
+  it('finds the quantity the detector missed, and the 11 kg refill by its price', async (ctx) => {
+    const draft = await read('booklet_table', BOOKLET_STORE);
+    if (!draft) return ctx.skip();
+    expect(draft.lines).toHaveLength(1);
+    const [line] = draft.lines;
+    expect(line.qty).toMatchObject({ value: 1, read: '1' });
+    expect(line.amount.value).toBe(151000);
+    expect(line.target).toEqual({ kind: 'product', productId: 'petron-11', type: 'refill' });
+  }, 120_000);
 });

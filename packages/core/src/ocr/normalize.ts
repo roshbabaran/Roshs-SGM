@@ -189,6 +189,62 @@ function isRealDay(year: number, month: number, day: number): boolean {
  * `today` is YYYY-MM-DD in the device's time zone.
  */
 export function parseReceiptDate(text: string, today: string = localDay(new Date())): ReadDate | null {
+  const read = readDate(separateDateTime(text), today);
+  if (read) return read;
+  const guessed = slashesFromLookalikes(separateDateTime(text), today);
+  return guessed ? { day: guessed.day, note: 'A "/" may have been read as a "1" or "|". Check the date.' } : null;
+}
+
+/** Characters a quickly written "/" is read as, the more likely first. */
+const SLASH_LOOKALIKES: Record<string, number> = { '|': 3, l: 2, I: 2, '1': 1 };
+
+/**
+ * A date whose "/" were read as "1", "l" or "|" ("4124126" for 4/24/26,
+ * "8|17|26" for 8/17/26): each way of turning one or two of them into "/"
+ * that gives month/day/year with a two- or four-digit year, on a real day not
+ * after today. When more than one way works, the one using the likelier
+ * look-alikes wins; a tie gives nothing.
+ */
+function slashesFromLookalikes(text: string, today: string): ReadDate | null {
+  const word = /[\dlI|/]{5,10}/.exec(text.replace(/\s+/g, ''));
+  if (!word) return null;
+  const t = word[0];
+  const spots: number[] = [];
+  for (let i = 1; i < t.length - 2; i += 1) if (SLASH_LOOKALIKES[t[i]] !== undefined) spots.push(i);
+  const found = new Map<string, number>();
+  const tryWith = (chosen: number[]) => {
+    const chars = t.split('');
+    for (const i of chosen) chars[i] = '/';
+    const candidate = chars.join('');
+    if (!/^\d{1,2}\/\d{1,2}\/(?:\d{2}|\d{4})$/.test(candidate)) return;
+    const read = readDate(candidate, today);
+    if (!read || read.note) return;
+    const weight = chosen.reduce((sum, i) => sum + SLASH_LOOKALIKES[t[i]], 0);
+    found.set(read.day, Math.max(found.get(read.day) ?? 0, weight));
+  };
+  const slashes = (t.match(/\//g) ?? []).length;
+  for (let a = 0; a < spots.length; a += 1) {
+    if (slashes === 1) tryWith([spots[a]]);
+    if (slashes === 0) for (let b = a + 1; b < spots.length; b += 1) tryWith([spots[a], spots[b]]);
+  }
+  const ranked = [...found.entries()].sort((x, y) => y[1] - x[1]);
+  if (ranked.length === 0 || (ranked.length > 1 && ranked[0][1] === ranked[1][1])) return null;
+  return { day: ranked[0][0] };
+}
+
+/**
+ * A date and a time the reader ran together: "11/1/262:30pm" is 11/1/26
+ * 2:30pm, and "10/21/20269:15" is 10/21/2026 9:15. The year takes two digits,
+ * or four when there are enough left for the hour.
+ */
+export function separateDateTime(text: string): string {
+  return text.replace(/(\d{1,2}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*)(\d{3,6})(?=\s*[:.]\s*\d{2})/, (_, head: string, run: string) => {
+    const year = run.length >= 5 ? 4 : 2;
+    return `${head}${run.slice(0, year)} ${run.slice(year)}`;
+  });
+}
+
+function readDate(text: string, today: string): ReadDate | null {
   const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
   const [ty, tm, td] = today.split('-').map((n) => parseInt(n, 10));
   let year: number | null = null;
@@ -238,10 +294,47 @@ export function parseReceiptDate(text: string, today: string = localDay(new Date
   return result;
 }
 
+/** "2:30 pm", "2:30PM", "2.30 p.m.", "2pm", "14:30". The number before it mustn't be part of a date ("10/16" or "10.16"). */
+const TIMES = [
+  /(^|[^\d/.\-:])(\d{1,2})\s*:\s*(\d{2})(?!\d)(?:\s*([ap])\.?\s*m\b\.?)?/,
+  /(^|[^\d/.\-:])(\d{1,2})\s*\.\s*(\d{2})\s*([ap])\.?\s*m\b\.?/,
+  /(^|[^\d/.\-:])(\d{1,2})()\s*([ap])\.?\s*m\b\.?/,
+];
+
+/**
+ * Reads a time written on a receipt or typed by the cashier, such as "2:30 pm"
+ * or "14:30", as 24-hour "HH:MM". Null when there is no time in the text, or
+ * it isn't a real time ("13:00 pm", "9:75").
+ */
+export function parseReceiptTime(text: string): string | null {
+  const t = separateDateTime(text).toLowerCase();
+  for (const pattern of TIMES) {
+    const match = pattern.exec(t);
+    if (!match) continue;
+    let hours = parseInt(match[2], 10);
+    const minutes = match[3] ? parseInt(match[3], 10) : 0;
+    const half = match[4];
+    if (minutes > 59) return null;
+    if (half) {
+      if (hours < 1 || hours > 12) return null;
+      hours = (hours % 12) + (half === 'p' ? 12 : 0);
+    } else if (hours > 23) {
+      return null;
+    }
+    return `${pad(hours)}:${pad(minutes)}`;
+  }
+  return null;
+}
+
 // --- Item text ---------------------------------------------------------------
 
-/** "11kg", "11 kg", "11k", "11 kgs", "11kilos", "2,7kg", "llkg" → "11 kg" / "2.7 kg". */
-const SIZE = /(^|[^a-z0-9.])([0-9oil]{1,3}(?:[.,][0-9oil]{1,2})?)\s*-?\s*(?:kgs?|kilos?|k)(?![a-z])/g;
+/**
+ * "11kg", "11 kg", "11k", "11 kgs", "11kilos", "2,7kg", and the ways the
+ * reader gets a handwritten size wrong: "llkg", "IIKG", "1lkg", "11KC",
+ * "11K6", "11KS" → "11 kg" / "2.7 kg". The digits may be read as I or l, and
+ * the g as C, 6 or S.
+ */
+const SIZE = /(^|[^a-z0-9.])([0-9oil]{1,3}(?:[.,][0-9oilft]{1,2})?)\s*-?\s*(?:kilos?|kgs?|k[gc6s]?)(?![a-z])/g;
 
 /**
  * Item text made comparable: lower case, "w/" spelled out, sizes written one
@@ -251,7 +344,14 @@ export function normalizeItemText(text: string): string {
   return text
     .toLowerCase()
     .replace(/w\s*\//g, 'with ')
-    .replace(SIZE, (_, before: string, size: string) => `${before}${fixDigits(size).value.replace(',', '.')} kg`)
+    // A word run into its size ("gasul2.7kg"): the size starts a new word.
+    .replace(/([a-z]{2,})(?=\d)/g, '$1 ')
+    .replace(SIZE, (whole: string, before: string, size: string) => {
+      // A 7 after the point is often read as "f" or "t" ("2.fkg").
+      const digits = fixDigits(size.replace(/([.,])[ft]/, '$17')).value.replace(',', '.');
+      // "ok" or "ik" aren't sizes: at least one real digit, or a size above zero.
+      return /\d/.test(size) || parseFloat(digits) > 0 ? `${before}${digits} kg` : whole;
+    })
     .replace(/(\d)\.(?=\d)/g, '$1\u0000')
     .replace(/[^a-z0-9\u0000]+/g, ' ')
     .replace(/\u0000/g, '.')

@@ -1,45 +1,51 @@
 import {
   draftFromLines,
-  draftProblem,
   draftToCart,
-  formatDay,
   formatPeso,
+  formatTime,
+  isValidDay,
   learnedAliases,
   listPriceOf,
   loadOcrAliases,
+  localDay,
+  parseReceiptTime,
   photoProblem,
   photoQuality,
-  priceCart,
+  linkedCustomer,
+  nameSuggestions,
+  NAME_SUGGEST,
+  readingImage,
+  recordSale,
+  saleTimeFor,
   saveOcrAliases,
-  type CartLine,
+  scannedSaleInput,
+  scannedTotal,
+  setContents,
+  tidyName,
+  CLOCK_SKEW_MS,
   type Catalogue,
-  type DraftField,
+  type Customer,
   type DraftLine,
   type DraftTarget,
   type Product,
   type ProductSet,
   type ReceiptDraft,
   type Rect,
+  type Sale,
 } from '@sgm/core';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, View } from 'react-native';
 
 import { Badge, Banner, SegmentedControl } from '../Basics';
 import { Button } from '../Button';
+import { DateField } from '../DateField';
 import { Dialog } from '../Dialog';
 import { Icon, type IconName } from '../Icon';
 import { Select } from '../Select';
-import { useServices, type PhotoSource, type ScanPhoto } from '../services';
+import { useCollection, useServices, useWork, type PhotoSource, type ScanPhoto } from '../services';
 import { Text } from '../Text';
 import { TextField } from '../TextField';
 import { radius, spacing, toneColors, useTheme } from '../theme';
-
-/** What the cashier confirmed from a scanned receipt. */
-export interface ScannedSale {
-  cart: CartLine[];
-  /** The number printed on the receipt, when there is one. */
-  slipNo?: string;
-}
 
 /** A line under review: as the reader made it (null for a line added by hand), and the cashier's choices. */
 interface ReviewLine {
@@ -80,42 +86,46 @@ function sameTarget(a: DraftTarget | null, b: DraftTarget | null): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function qtyField(text: string): DraftField<number> {
-  return { value: /^\d{1,3}$/.test(text) && Number(text) > 0 ? Number(text) : null, read: text, status: 'ok' };
+function qtyValue(text: string): number | null {
+  return /^\d{1,3}$/.test(text) && Number(text) > 0 ? Number(text) : null;
 }
 
+/** "14:30" as "2:30 PM". */
+function timeLabel(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  return `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+/** A line the sale can use: a product and a quantity of at least 1. */
+const isComplete = (line: ReviewLine) => !!line.target && qtyValue(line.qty) !== null;
+
 /**
- * Scanning a handwritten receipt into the sale: take or choose a photo, let
- * the reader fill in the lines, then check each line against the photo.
- * Nothing is saved here. The confirmed lines go into the cart and the sale is
- * charged as usual.
+ * Entering a sale from a handwritten receipt, from Transactions: take or
+ * choose a photo, let the reader fill in the window, check and correct it
+ * against the photo, then Save. Save records the sale straight away, paid in
+ * cash at SGM's prices, on the day (and time, if written) on the receipt.
+ * Nothing is saved before Save, and the only things it needs are the date and
+ * at least one line with a product and a quantity.
  */
-export function ReceiptScanDialog({
-  visible,
-  products,
-  sets,
-  replacing,
-  onCancel,
-  onConfirm,
-}: {
-  visible: boolean;
-  /** Products and sets that can be sold now. */
-  products: Product[];
-  sets: ProductSet[];
-  /** The cart already has items, and the receipt's lines will replace them. */
-  replacing: boolean;
-  onCancel: () => void;
-  /** Puts the lines in the cart. If it throws (not enough stock, say), the message is shown here and nothing is lost. */
-  onConfirm: (sale: ScannedSale) => void | Promise<void>;
-}) {
+export function ReceiptScanDialog({ visible, onClose, onSaved }: { visible: boolean; onClose: () => void; onSaved?: (sale: Sale) => void }) {
   const { ocr, store } = useServices();
+  const work = useWork();
   const { colors } = useTheme();
+  const { data: products } = useCollection<Product>('products');
+  const { data: sets } = useCollection<ProductSet>('sets');
+  const { data: customers } = useCollection<Customer>('borrowers');
+  const { data: sales } = useCollection<Sale>('sales');
   const [step, setStep] = useState<Step>({ kind: 'start' });
   const [lines, setLines] = useState<ReviewLine[]>([]);
   const [receiptNo, setReceiptNo] = useState('');
+  const [name, setName] = useState('');
+  /** The customer the cashier picked for the written name. */
+  const [pickedId, setPickedId] = useState<string | null>(null);
+  const [day, setDay] = useState('');
+  const [time, setTime] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Each pick or read gets a number, so a result that arrives after the dialog closed or restarted is dropped. */
+  /** Each pick or read gets a number, so a result that arrives after the window closed or restarted is dropped. */
   const run = useRef(0);
   const nextKey = useRef(0);
 
@@ -124,15 +134,24 @@ export function ReceiptScanDialog({
     setStep({ kind: 'start' });
     setLines([]);
     setReceiptNo('');
+    setName('');
+    setPickedId(null);
+    setDay('');
+    setTime('');
     setError(null);
     return () => {
       run.current += 1;
     };
   }, [visible]);
 
-  const catalogue: Catalogue = { products, sets };
-  const productsById = new Map(products.map((p) => [p.id, p]));
-  const setsById = new Map(sets.map((s) => [s.id, s]));
+  const today = localDay(new Date());
+  const byId = new Map(products.map((p) => [p.id, p]));
+  const allSets = new Map(sets.map((set) => [set.id, set]));
+  // A set can be sold only while every product in it, and in the sets inside it, still exists.
+  const setsById = new Map(sets.filter((set) => setContents(set, allSets).every((item) => byId.has(item.productId))).map((set) => [set.id, set]));
+  const activeProducts = products.filter((p) => p.active);
+  const activeSets = Array.from(setsById.values()).filter((set) => set.active);
+  const catalogue: Catalogue = { products: activeProducts, sets: activeSets };
 
   const read = async (photo: ScanPhoto) => {
     if (!ocr) return;
@@ -141,14 +160,18 @@ export function ReceiptScanDialog({
     setStep({ kind: 'reading', photo });
     try {
       await afterPaint();
-      const [text, aliases] = await Promise.all([ocr.readText(photo.image), loadOcrAliases(store)]);
+      const [text, aliases] = await Promise.all([ocr.readText(readingImage(photo.image)), loadOcrAliases(store)]);
       if (id !== run.current) return;
-      const draft = draftFromLines(text.lines, photo.image, { ...catalogue, aliases });
+      const draft = draftFromLines(text.lines, photo.image, { ...catalogue, aliases }, { today });
       draft.timings = text.timings;
       setLines(
         draft.lines.map((line) => ({ key: (nextKey.current += 1), read: line, target: line.target, qty: line.qty.value ? String(line.qty.value) : '' })),
       );
       setReceiptNo(draft.receiptNo.value ?? '');
+      setName(draft.registeredName.value ?? '');
+      setPickedId(null);
+      setDay(draft.date.value ?? '');
+      setTime(draft.time.value ? timeLabel(draft.time.value) : '');
       setStep({ kind: 'review', photo, draft });
     } catch (e) {
       if (id !== run.current) return;
@@ -174,28 +197,95 @@ export function ReceiptScanDialog({
     else void read(photo);
   };
 
-  const reviewed = lines.map((line) => ({ target: line.target, qty: qtyField(line.qty) }));
-  const problem = draftProblem(reviewed);
-  const cart = draftToCart(reviewed);
-  const { total } = priceCart(cart, productsById, setsById);
+  // The written name links a customer only when it is theirs exactly, or when the cashier picks them.
+  const typed = tidyName(name);
+  const picked = pickedId ? (customers.find((c) => c.id === pickedId) ?? null) : null;
+  const linked = linkedCustomer(name, pickedId, customers);
+  const q = typed.toLowerCase();
+  // Customers whose names are close to what was read ("loy Navarro" finds Joy Navarro), then ones containing what was typed.
+  const close = linked ? [] : nameSuggestions(typed, customers);
+  const likely = close[0] && close[0].similarity >= NAME_SUGGEST.likely ? close[0].customer : null;
+  const containing =
+    q.length >= 2
+      ? customers
+          .filter((c) => c.name.toLowerCase().includes(q) || q.split(' ').some((word) => word.length >= 3 && c.name.toLowerCase().includes(word)))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : [];
+  const suggestions = [...close.map((s) => s.customer), ...containing]
+    .filter((c, i, all) => c.id !== linked?.id && all.findIndex((other) => other.id === c.id) === i)
+    .slice(0, 4);
+  /** Picking a customer links them and puts their name in the field, as the cashier confirmed it. */
+  const pick = (customer: Customer) => {
+    setPickedId(customer.id);
+    setName(customer.name);
+  };
+
+  // When the sale happened.
+  const timeText = time.trim();
+  const writtenTime = timeText ? parseReceiptTime(timeText) : null;
+  const dayOk = isValidDay(day) && day <= today;
+  let when: { soldAt: string; timeEstimated: boolean } | null = null;
+  try {
+    when = dayOk && (!timeText || writtenTime) ? saleTimeFor(day, writtenTime, new Date()) : null;
+  } catch {
+    when = null;
+  }
+  const inFuture = !!when && new Date(when.soldAt).getTime() > Date.now() + CLOCK_SKEW_MS;
+  const timeHint = !dayOk
+    ? 'Used with the date.'
+    : writtenTime
+      ? `${timeLabel(writtenTime)}${step.kind === 'review' && step.draft.time.value === writtenTime ? ' (on the receipt)' : ''}`
+      : day === today
+        ? `${formatTime(new Date().toISOString())}, the time you press Save (not on the receipt)`
+        : '11:59 PM (not on the receipt)';
+
+  const slip = receiptNo.trim();
+  const repeated = slip ? sales.find((s) => s.slipNo === slip && s.locationId === work.locationId && s.status === 'completed') : undefined;
+
+  const complete = lines.filter(isComplete);
+  const incomplete = lines.length - complete.length;
+  const cart = draftToCart(complete.map((line) => ({ target: line.target, qty: { value: qtyValue(line.qty), read: line.qty, status: 'ok' as const } })));
+  // The same pricing Save sends to recordSale, so a linked customer's own prices show here too.
+  const total = scannedTotal({ cart, customer: linked, products: byId, sets: setsById });
+
+  const missing = [
+    !day ? 'the date of the sale' : !dayOk ? "a date that isn't after today" : null,
+    timeText && !writtenTime ? 'the time like 2:30 PM, or no time' : inFuture ? "a time that isn't later than now" : null,
+    complete.length === 0 ? 'at least one line with a product and a quantity' : null,
+  ].filter((m): m is string => !!m);
+  const canSave = step.kind === 'review' && missing.length === 0 && !!when && !busy;
 
   const change = (key: number, next: Partial<ReviewLine>) => setLines((current) => current.map((line) => (line.key === key ? { ...line, ...next } : line)));
   const remove = (key: number) => setLines((current) => current.filter((line) => line.key !== key));
   const addLine = () => setLines((current) => [...current, { key: (nextKey.current += 1), read: null, target: null, qty: '1' }]);
 
-  const confirm = async () => {
-    if (step.kind !== 'review' || problem) return;
+  const save = async () => {
+    if (step.kind !== 'review' || !canSave || !when) return;
     setBusy(true);
     setError(null);
     try {
-      await onConfirm({ cart, slipNo: receiptNo.trim() || undefined });
+      // Taken again now: a sale dated today without a time gets the moment Save is pressed.
+      const at = saleTimeFor(day, writtenTime, new Date());
+      const { input } = scannedSaleInput({
+        cart,
+        name,
+        customer: linked,
+        products: byId,
+        sets: setsById,
+        slipNo: slip,
+        soldAt: at.soldAt,
+        timeEstimated: at.timeEstimated,
+      });
+      const sale = await recordSale(work.ctx, input);
       // Spellings the cashier corrected are remembered on this device, so the next receipt matches straight away.
       const corrected = learnedAliases(
         step.draft.lines,
         lines.flatMap((line) => (line.read ? [{ item: line.read.item, target: line.target }] : [])),
       );
       void saveOcrAliases(store, corrected).catch(() => undefined);
+      onSaved?.(sale);
     } catch (e) {
+      // Not enough stock, a receipt number already entered: fixed here, then saved again.
       setError(messageOf(e));
     } finally {
       setBusy(false);
@@ -203,26 +293,23 @@ export function ReceiptScanDialog({
   };
 
   const options = [
-    ...products.map((p) => ({
+    ...activeProducts.map((p) => ({
       label: p.name,
       value: `p:${p.id}`,
       hint: p.kind === 'cylinder' ? `Refill ${formatPeso(p.refillPrice ?? p.price)} · New ${formatPeso(p.price)}` : formatPeso(p.price),
     })),
-    ...sets.map((s) => ({ label: s.name, value: `s:${s.id}`, hint: `Set · ${formatPeso(s.price)}` })),
+    ...activeSets.map((s) => ({ label: s.name, value: `s:${s.id}`, hint: `Set · ${formatPeso(s.price)}` })),
   ];
 
   let content;
   let actions;
   if (!ocr) {
     content = <Banner tone="info">Scanning receipts isn't available on this device.</Banner>;
-    actions = <Button title="Close" variant="secondary" onPress={onCancel} />;
+    actions = <Button title="Close" variant="secondary" onPress={onClose} />;
   } else if (step.kind === 'start') {
     content = (
       <>
-        <Text muted>
-          Lay the receipt flat in good light, with the whole receipt in the photo and no shadow over the writing. Take it before the receipt goes to the
-          customer.
-        </Text>
+        <Text muted>Lay the receipt flat in good light, with the whole receipt in the photo and no shadow over the writing.</Text>
         {step.photo ? <PhotoPreview photo={step.photo} height={220} /> : null}
         {step.problem ? <Banner tone="warning">{step.problem}</Banner> : null}
         <View style={styles.sources}>
@@ -239,7 +326,7 @@ export function ReceiptScanDialog({
         </View>
       </>
     );
-    actions = <Button title="Cancel" variant="secondary" onPress={onCancel} />;
+    actions = <Button title="Cancel" variant="secondary" onPress={onClose} />;
   } else if (step.kind === 'reading') {
     content = (
       <>
@@ -252,28 +339,85 @@ export function ReceiptScanDialog({
         </View>
       </>
     );
-    actions = <Button title="Cancel" variant="secondary" onPress={onCancel} />;
+    actions = <Button title="Cancel" variant="secondary" onPress={onClose} />;
   } else {
     const { draft, photo } = step;
     const written = draft.total.value;
+    const amounts = lines.map((line) => line.read?.amount.value ?? null).filter((a): a is number => a !== null);
+    const writtenSum = amounts.reduce((sum, a) => sum + a, 0);
+    const writtenTotal = written ?? (amounts.length > 0 ? writtenSum : null);
     content = (
       <>
         <PhotoPreview photo={photo} height={260} expandable />
         <View style={styles.fields}>
+          <View style={styles.field}>
+            <TextField
+              label="Registered Name (optional)"
+              value={name}
+              onChangeText={(text) => {
+                setName(text);
+                if (picked && tidyName(text).toLowerCase() !== picked.name.toLowerCase()) setPickedId(null);
+              }}
+              hint={
+                linked
+                  ? `Linked to the customer ${linked.name}.`
+                  : likely
+                    ? `Looks like the customer ${likely.name}. Tap their name below to link them, or keep it as written.`
+                    : typed
+                      ? 'Kept on the sale as written. No customer is linked.'
+                      : (draft.registeredName.note ?? 'The name written on the receipt, if any.')
+              }
+              autoCapitalize="words"
+            />
+            {suggestions.length > 0 ? (
+              <View style={styles.chips}>
+                {suggestions.map((c) => (
+                  <Pressable
+                    key={c.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Link to the customer ${c.name}`}
+                    onPress={() => pick(c)}
+                    style={[styles.chip, { borderColor: c.id === likely?.id ? colors.primary : colors.border, backgroundColor: colors.surfaceMuted }]}
+                  >
+                    <Icon name="person-outline" size={14} color={colors.textMuted} />
+                    <Text variant="small">{c.name}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+          <View style={styles.field}>
+            <DateField
+              label="Date of transaction"
+              value={day}
+              onChange={setDay}
+              max={today}
+              error={day && !dayOk ? "The date can't be after today." : undefined}
+            />
+            {draft.date.note ? (
+              <Text variant="small" muted>
+                {draft.date.value ? draft.date.note : `${draft.date.note} Choose the date written on the receipt.`}
+              </Text>
+            ) : null}
+          </View>
           <TextField
-            label="Receipt no."
+            label="Time (optional)"
+            value={time}
+            onChangeText={setTime}
+            placeholder="e.g. 2:30 PM"
+            error={timeText && !writtenTime ? 'Enter the time like 2:30 PM, or leave it empty.' : inFuture ? "That time hasn't come yet." : undefined}
+            hint={`The sale will be at ${timeHint}.`}
+            containerStyle={styles.field}
+          />
+          <TextField
+            label="Receipt no. (optional)"
             value={receiptNo}
             onChangeText={setReceiptNo}
+            error={repeated ? `Already entered as sale ${repeated.receiptNo}. Check the number on the receipt.` : undefined}
             hint={draft.receiptNo.note ?? 'Saved with the sale, so the same receipt is not entered twice.'}
             autoCapitalize="characters"
             containerStyle={styles.field}
           />
-          <ReadValue
-            label="Date on receipt"
-            value={draft.date.value ? formatDay(draft.date.value) : draft.date.read || 'Not found'}
-            field={draft.date}
-          />
-          <ReadValue label="Written total" value={written !== null ? formatPeso(written) : 'Not found'} field={draft.total} />
         </View>
 
         <View style={styles.items}>
@@ -284,7 +428,7 @@ export function ReceiptScanDialog({
               key={line.key}
               line={line}
               photo={photo}
-              products={productsById}
+              products={byId}
               catalogue={catalogue}
               options={options}
               onChange={(next) => change(line.key, next)}
@@ -294,29 +438,41 @@ export function ReceiptScanDialog({
           <View style={styles.addRow}>
             <Button title="Add a line" icon="add" variant="secondary" size="sm" onPress={addLine} />
           </View>
+          {incomplete > 0 && complete.length > 0 ? (
+            <Banner tone="warning">
+              {incomplete === 1
+                ? 'One line has no product or quantity. It will be left out when you save.'
+                : `${incomplete} lines have no product or quantity. They will be left out when you save.`}
+            </Banner>
+          ) : null}
         </View>
 
         <View style={[styles.totalRow, { borderTopColor: colors.border }]}>
           <View style={styles.flex}>
             <Text weight="600">Sale total</Text>
             <Text variant="small" muted>
-              At SGM's prices, which the sale uses
+              {`At SGM's prices${linked?.discount ? `, with ${linked.name}'s prices` : ''}. Paid in cash.`}
             </Text>
+            {writtenTotal !== null ? (
+              <Text variant="small" muted numeric>
+                {`Written on the receipt: ${formatPeso(writtenTotal)}${written === null ? ' (the amounts added up)' : ''}`}
+              </Text>
+            ) : null}
           </View>
           <Text variant="heading" numeric>
             {formatPeso(total)}
           </Text>
         </View>
-        {!problem && written !== null && total !== written ? (
-          <Banner tone="warning">{`The receipt says ${formatPeso(written)}. Check the quantities and products against the photo.`}</Banner>
+        {complete.length > 0 && writtenTotal !== null && total !== writtenTotal ? (
+          <Banner tone="warning">{`The receipt says ${formatPeso(writtenTotal)} but SGM's prices come to ${formatPeso(total)}. The sale is saved at SGM's prices; check the quantities and products against the photo.`}</Banner>
         ) : null}
-        {problem ? <Banner tone="info">{problem}</Banner> : null}
+        {missing.length > 0 ? <Banner tone="info">{`To save, enter ${joinWords(missing)}.`}</Banner> : null}
       </>
     );
     actions = (
       <>
         <Button title="Scan again" icon="refresh" variant="secondary" onPress={() => setStep({ kind: 'start' })} disabled={busy} />
-        <Button title={replacing ? 'Replace current sale' : 'Add to sale'} icon="checkmark" onPress={() => void confirm()} disabled={!!problem} loading={busy} />
+        <Button title="Save" icon="checkmark" onPress={() => void save()} disabled={!canSave} loading={busy} />
       </>
     );
   }
@@ -325,7 +481,7 @@ export function ReceiptScanDialog({
     <Dialog
       visible={visible}
       title={step.kind === 'review' ? 'Check the receipt' : 'Scan a receipt'}
-      onClose={onCancel}
+      onClose={onClose}
       width={step.kind === 'review' ? 760 : 480}
       dismissable={!busy}
       actions={actions}
@@ -334,6 +490,11 @@ export function ReceiptScanDialog({
       {error ? <Banner tone="danger">{error}</Banner> : null}
     </Dialog>
   );
+}
+
+/** "a, b and c". */
+function joinWords(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
 /** One receipt line: what was written, and the product, sale type and quantity the cashier confirms. */
@@ -359,15 +520,20 @@ function ReviewRow({
   const product = target?.kind === 'product' ? products.get(target.productId) : undefined;
   const picked = !read || !sameTarget(read.target, target);
   const listPrice = target ? listPriceOf(target, catalogue) : null;
-  const unsureNumbers = read ? [read.qty, read.unitPrice, read.amount].some((field) => field.status !== 'ok') : false;
-  const notes = [picked ? undefined : read?.targetNote, read?.qty.note, read?.unitPrice.note, read?.amount.note].filter((note): note is string => !!note);
+  const complete = isComplete(line);
+  // A quantity the reader worked out or set to 1, which the cashier hasn't changed yet.
+  const qtyGuessed = !!read && read.qty.status !== 'ok' && read.qty.value !== null && line.qty === String(read.qty.value);
+  const unsureNumbers = read ? [read.unitPrice, read.amount].some((field) => field.status !== 'ok' && field.value !== null) : false;
+  const notes = [picked ? undefined : read?.targetNote, qtyGuessed ? read?.qty.note : undefined, read?.unitPrice.note, read?.amount.note].filter(
+    (note): note is string => !!note,
+  );
 
   // Likely products first, so a close call is one tap away.
   const likely = new Set((read?.candidates ?? []).map(optionValue));
   const ordered = [
-    ...options.filter((o) => likely.has(o.value)).map((o) => ({ ...o, hint: `Likely · ${o.hint ?? ''}` })),
+    ...(read?.candidates ?? []).flatMap((c) => options.filter((o) => o.value === optionValue(c)).map((o) => ({ ...o, hint: `Likely · ${o.hint ?? ''}` }))),
     ...options.filter((o) => !likely.has(o.value)),
-  ];
+  ].filter((o, i, all) => all.findIndex((other) => other.value === o.value) === i);
 
   /** Refill or new for a cylinder, from the written price when it matches one of them. */
   const typeFor = (next: Product): 'refill' | 'new' | 'item' => {
@@ -377,6 +543,8 @@ function ReviewRow({
     const each = read?.unitPrice.value ?? (amount !== null && qty ? amount / qty : null);
     if (each === next.price && each !== next.refillPrice) return 'new';
     if (each === (next.refillPrice ?? next.price)) return 'refill';
+    const candidate = read?.candidates.find((c) => c.kind === 'product' && c.productId === next.id);
+    if (candidate?.kind === 'product' && candidate.type !== 'item') return candidate.type;
     return target?.kind === 'product' && target.type === 'new' ? 'new' : 'refill';
   };
 
@@ -387,7 +555,7 @@ function ReviewRow({
   };
 
   return (
-    <View style={[styles.row, { borderColor: target ? colors.border : colors.danger, backgroundColor: colors.surface }]}>
+    <View style={[styles.row, { borderColor: complete ? colors.border : colors.warning, backgroundColor: colors.surface }]}>
       {read ? <PhotoCrop photo={photo} rect={read.rect} /> : null}
       <View style={styles.rowControls}>
         <View style={styles.rowProduct}>
@@ -418,11 +586,13 @@ function ReviewRow({
         </Pressable>
       </View>
       <View style={styles.rowInfo}>
-        {!target ? <Badge label="Pick the product" tone="danger" /> : !picked && read?.targetStatus !== 'ok' ? <Badge label="Check the product" tone="warning" /> : null}
+        {!complete ? <Badge label={target ? 'No quantity: left out on Save' : 'No product: left out on Save'} tone="warning" /> : null}
+        {target && !picked && read?.targetStatus !== 'ok' ? <Badge label="Check the product" tone="warning" /> : null}
+        {qtyGuessed ? <Badge label="Check the quantity" tone="warning" /> : null}
         {unsureNumbers ? <Badge label="Check the numbers" tone="warning" /> : null}
         <Text variant="small" muted numeric style={styles.flex}>
           {[
-            read ? `Written: ${read.qty.read || '?'} × ${read.unitPrice.read || '?'} = ${read.amount.read || '?'}` : 'Added by hand',
+            read ? `Written: ${read.item.read || '?'} · ${read.qty.read || '?'} × ${read.unitPrice.read || '?'} = ${read.amount.read || '?'}` : 'Added by hand',
             listPrice !== null ? `SGM price ${formatPeso(listPrice)}${target?.kind === 'set' ? ' per set' : ' each'}` : null,
           ]
             .filter(Boolean)
@@ -434,26 +604,6 @@ function ReviewRow({
           {note}
         </Text>
       ))}
-    </View>
-  );
-}
-
-/** A value the reader found that the cashier only needs to look at. */
-function ReadValue({ label, value, field }: { label: string; value: string; field: DraftField<unknown> }) {
-  return (
-    <View style={styles.field}>
-      <Text variant="label">{label}</Text>
-      <View style={styles.readValue}>
-        <Text weight="600" numeric>
-          {value}
-        </Text>
-        {field.status !== 'ok' ? <Badge label={field.status === 'missing' ? 'Not found' : 'Check'} tone="warning" /> : null}
-      </View>
-      {field.note ? (
-        <Text variant="small" muted>
-          {field.note}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -514,7 +664,8 @@ const styles = StyleSheet.create({
   photo: { width: '100%', borderRadius: radius.md },
   fields: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   field: { flexGrow: 1, flexBasis: 200, gap: spacing.xs },
-  readValue: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 42 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: spacing.sm, paddingVertical: 4 },
   items: { gap: spacing.sm },
   row: { borderWidth: 1, borderRadius: radius.md, padding: spacing.sm, gap: spacing.sm },
   rowControls: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },

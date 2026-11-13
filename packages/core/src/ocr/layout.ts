@@ -10,7 +10,8 @@
  * first: the photo turned by the median slant of its longer lines.
  */
 import { isUnitWord, looksNumeric, parseQty } from './normalize';
-import type { OcrLine, Rect } from './types';
+import { framePoint } from './preprocess';
+import type { OcrLine, Point, Quad, Rect } from './types';
 
 export type Column = 'qty' | 'unit' | 'item' | 'unitPrice' | 'amount';
 
@@ -29,6 +30,8 @@ export interface Token {
   bottom: number;
   /** Index of the OcrLine it came from. */
   line: number;
+  /** Index of the word within that line. */
+  word: number;
 }
 
 /** The words that make up one field, joined in reading order. */
@@ -51,7 +54,11 @@ export interface ReceiptLayout {
   skew: number;
   rows: LayoutRow[];
   receiptNo: Cell | null;
+  /** The receipt number was found without its "No." or "№" label (a lone printed number above the table). */
+  receiptNoGuessed: boolean;
   date: Cell | null;
+  /** The value written after "Registered Name:". */
+  registeredName: Cell | null;
   total: Cell | null;
 }
 
@@ -60,8 +67,47 @@ export interface ReceiptLayout {
 const HEADINGS: Record<Column, string[][]> = {
   qty: [['QTY'], ['QUANTITY'], ['QTTY'], ['QNTY'], ['QUAN']],
   unit: [['UNIT'], ['UNITS'], ['UOM'], ['U/M']],
-  item: [['ARTICLES'], ['ARTICLE'], ['DESCRIPTION'], ['PARTICULARS'], ['ITEMS'], ['ITEM'], ['PRODUCT']],
-  unitPrice: [['UNIT', 'PRICE'], ['U/PRICE'], ['U', 'PRICE'], ['UNIT', 'COST'], ['PRICE'], ['U/P'], ['RATE']],
+  item: [
+    // "ITEM DESCRIPTION/NATURE OF SERVICE" as one heading, however the reader splits it ("OFSERVICE"), so
+    // none of its words becomes a column of its own.
+    ['ITEM', 'DESCRIPTION/NATURE', 'OF', 'SERVICE'],
+    ['ITEM', 'DESCRIPTION/NATURE', 'OFSERVICE'],
+    // ITEM and DESCRIPTION read as one word ("ITEMDESCRIPTIOÑ/NATURE", "ITEM'DESCRIRTION/NATURE").
+    ['ITEMDESCRIPTION/NATURE', 'OF', 'SERVICE'],
+    ['ITEMDESCRIPTION/NATURE', 'OFSERVICE'],
+    ['ITEMDESCRIPTION/NATURE'],
+    ['ITEMDESCRIPTION'],
+    ['ITEM', 'DESCRIPTION/NATUREOF', 'SERVICE'],
+    ['ITEM', 'DESCRIPTION', '/', 'NATURE', 'OF', 'SERVICE'],
+    ['ITEM', 'DESCRIPTION/', 'NATURE', 'OF', 'SERVICE'],
+    ['ITEM', 'DESCRIPTION', '/NATURE', 'OF', 'SERVICE'],
+    ['ITEM', 'DESCRIPTION', 'NATURE', 'OF', 'SERVICE'],
+    ['ITEM', 'DESCRIPTION/NATURE'],
+    ['ITEM', 'DESCRIPTION'],
+    ['DESCRIPTION/NATURE'],
+    ['ARTICLES'],
+    ['ARTICLE'],
+    ['DESCRIPTION'],
+    ['PARTICULARS'],
+    ['ITEMS'],
+    ['ITEM'],
+    ['PRODUCT'],
+  ],
+  unitPrice: [
+    ['UNIT', 'COST/PRICE'],
+    ['UNIT', 'COST/', 'PRICE'],
+    ['UNIT', 'COST', '/PRICE'],
+    ['UNIT', 'COST', '/', 'PRICE'],
+    ['UNIT', 'COST', 'PRICE'],
+    ['UNIT', 'COSTPRICE'],
+    ['UNIT', 'PRICE'],
+    ['U/PRICE'],
+    ['U', 'PRICE'],
+    ['UNIT', 'COST'],
+    ['PRICE'],
+    ['U/P'],
+    ['RATE'],
+  ],
   amount: [['AMOUNT'], ['AMT'], ['TOTAL', 'PRICE']],
 };
 const TOTAL_LABELS = [['TOTAL', 'AMOUNT', 'DUE'], ['TOTAL', 'AMOUNT'], ['TOTAL', 'SALES'], ['TOTAL', 'DUE'], ['GRAND', 'TOTAL'], ['AMOUNT', 'DUE'], ['TOTAL']];
@@ -145,7 +191,7 @@ function tokensOf(lines: OcrLine[], angle: number): Token[] {
   const tokens: Token[] = [];
   lines.forEach((line, index) => {
     const words = line.words.length > 0 ? line.words : [line];
-    for (const word of words) {
+    words.forEach((word, wordIndex) => {
       const { x, y, width, height } = word.rect;
       const us: number[] = [];
       const vs: number[] = [];
@@ -174,8 +220,9 @@ function tokensOf(lines: OcrLine[], angle: number): Token[] {
         top: cv - half,
         bottom: cv + half,
         line: index,
+        word: wordIndex,
       });
-    }
+    });
   });
   return tokens;
 }
@@ -280,6 +327,17 @@ function headingRow(rows: Row[]): { index: number; guides: ColumnGuide[] } | nul
       const right = Math.max(...phrase.map((t) => t.right));
       guides.push({ column, left, right, u: (left + right) / 2 });
     }
+    // The item heading read too badly to match: the printed words left of the first column found are the item
+    // column, which is where ITEM DESCRIPTION/NATURE OF SERVICE is printed.
+    if (guides.length >= 2 && !guides.some((g) => g.column === 'item')) {
+      const first = Math.min(...guides.map((g) => g.left));
+      const words = row.tokens.filter((t) => t.right <= first && t.confidence >= 0.5 && /[A-Z]{3}/.test(headingForm(t.text)));
+      if (words.length > 0) {
+        const left = Math.min(...words.map((t) => t.left));
+        const right = Math.max(...words.map((t) => t.right));
+        guides.push({ column: 'item', left, right, u: (left + right) / 2 });
+      }
+    }
     const main = guides.filter((g) => g.column === 'item' || g.column === 'amount' || g.column === 'unitPrice').length;
     if (guides.length >= 2 && main >= 1 && (!best || guides.length > best.guides.length)) {
       best = { index, guides: guides.sort((a, b) => a.u - b.u) };
@@ -315,14 +373,16 @@ function edgeBetween(a: ColumnGuide, b: ColumnGuide): number {
   return (a.right + b.left) / 2;
 }
 
-function columnFor(token: Token, guides: ColumnGuide[]): Column | null {
-  let index = guides.length - 1;
+/** The index of the column a word sits under, by position only. */
+function guideAt(u: number, guides: ColumnGuide[]): number {
   for (let i = 0; i < guides.length - 1; i += 1) {
-    if (token.u < edgeBetween(guides[i], guides[i + 1])) {
-      index = i;
-      break;
-    }
+    if (u < edgeBetween(guides[i], guides[i + 1])) return i;
   }
+  return guides.length - 1;
+}
+
+function columnFor(token: Token, guides: ColumnGuide[]): Column | null {
+  const index = guideAt(token.u, guides);
   if (fits(guides[index].column, token)) return guides[index].column;
   // Doesn't fit where it sits (a price written a little left, say): try the neighbours.
   const neighbours = [guides[index - 1], guides[index + 1]].filter((g): g is ColumnGuide => !!g && fits(g.column, token));
@@ -459,18 +519,14 @@ function valueAfter(row: Row, label: Token, pattern: RegExp): Cell | null {
 }
 
 const DATE_LABEL = /^(?:date|dated|petsa)\s*[:;.,]?\s*(.*)$/i;
-const NUMBER_LABEL = /^(?:n[o0º°]|#|n[o0]\.?:)\s*[.:]?\s*(.*)$/i;
+/**
+ * "No.", "No:", "#", and the printed "№", which the reader returns as "N?",
+ * "Nº", "N°", "N2" or "№" itself. Not the start of a word such as "Nov".
+ */
+const NUMBER_LABEL = /^(?:№|n[o0º°?2]|#|n[o0]\.?:)(?![a-z])\s*[.:]?\s*(.*)$/i;
 
-function findDate(rows: Row[]): Cell | null {
-  for (const row of rows) {
-    for (const t of row.tokens) {
-      if (DATE_LABEL.test(t.text) && t.confidence >= 0.5) {
-        const value = valueAfter(row, t, DATE_LABEL);
-        if (value) return value;
-      }
-    }
-  }
-  // No label: the first thing anywhere that looks like a date.
+/** No label: the first thing anywhere that looks like a date. */
+function dateAnywhere(rows: Row[]): Cell | null {
   for (const row of rows) {
     for (const t of row.tokens) {
       if (/\b\d{1,2}\s*[/-]\s*\d{1,2}\s*[/-]\s*\d{2,4}\b/.test(t.text)) return cellOf([t]);
@@ -492,14 +548,268 @@ function findReceiptNo(rows: Row[], lines: OcrLine[]): Cell | null {
   return null;
 }
 
+/**
+ * No "No." or "№" was read: a printed number of four to eight digits on a line
+ * of its own, above the item table, read with confidence, and not a date, a
+ * TIN or a phone number. The highest one, then the rightmost, wins.
+ */
+function lonelyReceiptNo(tokens: Token[], lines: OcrLine[], above: number): Cell | null {
+  const found = tokens.filter((t) => {
+    const line = lines[t.line];
+    return (
+      t.v < above &&
+      t.confidence >= 0.85 &&
+      /^\d{4,8}$/.test(t.text.trim()) &&
+      line.words.length <= 2 &&
+      !OTHER_NUMBERS.test(line.text) &&
+      !/\d\s*[/-]\s*\d/.test(line.text)
+    );
+  });
+  found.sort((a, b) => a.top - b.top || b.u - a.u);
+  return found[0] ? cellOf([found[0]]) : null;
+}
+
+// --- Labelled fields: "Registered Name:" and "Date:" -------------------------
+
+/**
+ * Other printed labels near the top of the receipt. A value stops at any of
+ * these, or at any word ending in a colon, so it never runs into the next label.
+ */
+const LABEL_WORDS = new Set(['TIN', 'ADDRESS', 'BUSINESS', 'STYLE', 'DATE', 'REGISTERED', 'NAME', 'TERMS', 'SOLD', 'OSCA', 'PWD', 'SIGNATURE', 'CASHIER', 'NO']);
+
+/** A label word as compared: capital letters only, digits read as the letters they resemble, "rn" as "m" ("Narne"). */
+function labelForm(text: string): string {
+  return headingForm(text).replace(/[^A-Z]/g, '').replace(/RN/g, 'M');
+}
+
+/** Close enough to a printed word: the same, or at most `edits` letters wrong in a word of three letters or more. */
+function near(form: string, word: string, edits: number): boolean {
+  return form === word || (form.length >= 3 && Math.abs(form.length - word.length) <= edits && editDistance(form, word) <= edits);
+}
+
+/** A word split at its colon: "Name:Juan" is "Name" and "Juan". `rest` is null when there is no colon. */
+function splitColon(text: string): { label: string; rest: string | null } {
+  const at = text.search(/[:;]/);
+  return at < 0 ? { label: text, rest: null } : { label: text.slice(0, at), rest: text.slice(at + 1).trim() };
+}
+
+function isLabel(t: Token): boolean {
+  const text = t.text.trim();
+  if (text.length > 1 && /[:;]$/.test(text)) return true;
+  return t.confidence >= 0.6 && LABEL_WORDS.has(labelForm(text));
+}
+
+/** The words of a label found at `i` on a line, and any value read into its last word ("Date:10/16/26"). */
+interface LabelMatch {
+  tokens: Token[];
+  rest: string;
+  /** With `rest`: how many characters of the last word are the label ("Name:" in "Name:Pedro"). */
+  cut?: number;
+}
+type LabelMatcher = (line: Token[], i: number) => LabelMatch | null;
+
+/** "Registered Name:", "REGISTERED NAME", "Reg. Name:", "RegisteredName:", "Registered Narne:". */
+function registeredNameLabel(line: Token[], i: number): LabelMatch | null {
+  const text = line[i].text;
+  const first = splitColon(text);
+  const a = labelForm(first.label);
+  if (near(a, 'REGISTEREDNAME', 2) || a === 'REGNAME' || a === 'REGDNAME') return glued([line[i]], text, first);
+  // The name run into the label without a colon ("RegisteredNameAna").
+  const prefix = /^((?:registered|reg\.?)\s*name)(.+)$/i.exec(first.label);
+  if (first.rest === null && prefix) return { tokens: [line[i]], rest: prefix[2], cut: prefix[1].length };
+  if (first.rest !== null || !(near(a, 'REGISTERED', 2) || a === 'REG' || a === 'REGD')) return null;
+  const next = line[i + 1];
+  if (!next) return null;
+  const second = splitColon(next.text);
+  if (near(labelForm(second.label), 'NAME', 1)) return glued([line[i], next], next.text, second);
+  // "NameGrace": the label word and the name read as one word.
+  const name = /^([Nn][Aa][Mm][Ee])([A-Z].*)$/.exec(second.label);
+  return name && second.rest === null ? { tokens: [line[i], next], rest: name[2], cut: name[1].length } : null;
+}
+
+/** A label match whose last word may also hold the start of the value after a colon ("Name:Pedro"). */
+function glued(tokens: Token[], text: string, split: { label: string; rest: string | null }): LabelMatch {
+  return split.rest ? { tokens, rest: split.rest, cut: text.search(/[:;]/) + 1 } : { tokens, rest: '' };
+}
+
+function dateLabel(line: Token[], i: number): LabelMatch | null {
+  const t = line[i];
+  const text = t.text.trim();
+  const match = t.confidence >= 0.5 ? DATE_LABEL.exec(text) : null;
+  if (!match) return null;
+  const rest = match[1] ?? '';
+  return rest ? { tokens: [t], rest, cut: text.length - rest.length } : { tokens: [t], rest };
+}
+
+/** The value's words: up to the next label or a word already taken, at most six. */
+function valueFrom(tokens: Token[], taken: Set<Token>): Token[] {
+  const value: Token[] = [];
+  for (const t of tokens) {
+    if (taken.has(t) || isLabel(t)) break;
+    value.push(t);
+    if (value.length >= 6) break;
+  }
+  return value;
+}
+
+/** How much two words overlap up and down, as a share of the shorter one. */
+function verticalOverlap(a: Pick<Token, 'top' | 'bottom'>, b: Pick<Token, 'top' | 'bottom'>): number {
+  const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return overlap / Math.max(1, Math.min(a.bottom - a.top, b.bottom - b.top));
+}
+
+interface LabelledField {
+  label: Token[];
+  value: Cell | null;
+  /** The value was read into the label's own word ("Name:Juan"). */
+  glued: boolean;
+  /** When glued: how many characters of the label's last word are the label. */
+  cut: number | null;
+}
+
+/**
+ * A printed label and the value written for it. The value is the rest of the
+ * label's own line; or else the nearest piece of writing to its right, level
+ * with it; or else the writing just under it, starting about where the label
+ * starts. `taken` holds words that can't be part of a value (the column
+ * headings, other fields). `lines` are the words of each line, left to right.
+ */
+function findLabelled(lines: Token[][], matcher: LabelMatcher, taken: Set<Token>): LabelledField | null {
+  for (const line of lines) {
+    for (let i = 0; i < line.length; i += 1) {
+      if (taken.has(line[i])) continue;
+      const match = matcher(line, i);
+      if (!match) continue;
+      const label = [...match.tokens];
+      let after = line.slice(i + label.length);
+      // A colon read as a word of its own belongs to the label.
+      if (after[0] && /^[:;.]$/.test(after[0].text.trim())) {
+        label.push(after[0]);
+        after = after.slice(1);
+      }
+      return { label, value: labelValue(label, match.rest, after, lines, taken), glued: match.rest !== '', cut: match.cut ?? null };
+    }
+  }
+  return null;
+}
+
+function labelValue(label: Token[], rest: string, after: Token[], lines: Token[][], taken: Set<Token>): Cell | null {
+  const last = label[label.length - 1];
+  const notValue = new Set([...taken, ...label]);
+
+  // 1. The rest of the label's own line.
+  const same = [...(rest ? [{ ...last, text: rest }] : []), ...valueFrom(after, notValue)];
+  if (same.length > 0) return cellOf(same, true);
+
+  const height = Math.max(...label.map((t) => t.bottom - t.top));
+  const left = Math.min(...label.map((t) => t.left));
+  const right = Math.max(...label.map((t) => t.right));
+  const box = { top: Math.min(...label.map((t) => t.top)), bottom: Math.max(...label.map((t) => t.bottom)) };
+  const starts = lines
+    .filter((line) => line[0] && line[0].line !== last.line)
+    .map((line) => ({ line, first: line.find((t) => !notValue.has(t)) }))
+    .filter((s): s is { line: Token[]; first: Token } => !!s.first);
+  const valueOf = (start: { line: Token[]; first: Token }) => valueFrom(start.line.slice(start.line.indexOf(start.first)), notValue);
+
+  // 2. The nearest box to the right, level with the label.
+  const rightOf = starts
+    .filter(({ first: t }) => t.left >= right - height * 0.5 && t.left - right < 15 * height && verticalOverlap(t, box) >= 0.5)
+    .sort((a, b) => a.first.left - b.first.left)[0];
+  const fromRight = rightOf ? valueOf(rightOf) : [];
+  if (fromRight.length > 0) return cellOf(fromRight, true);
+
+  // 3. The box directly below: its left edge close to the label's, less than two label heights down.
+  const below = starts
+    .filter(({ first: t }) => Math.abs(t.left - left) <= 2 * height && t.top >= box.bottom - 0.3 * height && t.top - box.bottom < 2 * height)
+    .sort((a, b) => a.first.top - b.first.top || a.first.left - b.first.left)[0];
+  const fromBelow = below ? valueOf(below) : [];
+  return fromBelow.length > 0 ? cellOf(fromBelow, true) : null;
+}
+
+/** The words of each line the reader found, left to right, the lines top to bottom. */
+function wordsByLine(tokens: Token[]): Token[][] {
+  const lines = new Map<number, Token[]>();
+  for (const t of tokens) lines.set(t.line, [...(lines.get(t.line) ?? []), t]);
+  return [...lines.values()].map((line) => line.sort((a, b) => a.u - b.u)).sort((a, b) => a[0].v - b[0].v || a[0].u - b[0].u);
+}
+
+// --- Marks that aren't writing ----------------------------------------------
+
+/** What a single pen stroke reads as, upright or turned (the reader turns tall boxes a quarter turn). */
+const STROKE = /^[|lI1!\[\]\-–—_一]$/;
+
+/**
+ * A line drawn down the price or amount column to void the empty rows: one
+ * stroke, thin, and much taller than the printed headings.
+ */
+function isVoidStroke(t: Token, guides: ColumnGuide[], textHeight: number): boolean {
+  const height = t.bottom - t.top;
+  if (!STROKE.test(t.text.trim()) || height < 3 * textHeight || (t.right - t.left) * 2 > height) return false;
+  const column = guides[guideAt(t.u, guides)].column;
+  return column === 'unitPrice' || column === 'amount';
+}
+
+/** A row holding nothing but one unsure character: a speck or a stray mark, not an item. */
+function isSpeck(row: LayoutRow): boolean {
+  const tokens = Object.values(row.cells).flatMap((cell) => cell?.tokens ?? []);
+  return tokens.length === 1 && tokens[0].text.trim().length <= 1 && tokens[0].confidence < 0.5;
+}
+
+function median(values: number[]): number {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted.length > 0 ? sorted[Math.floor(sorted.length / 2)] : 0;
+}
+
 // --- Putting it together ---------------------------------------------------
 
-export function layoutOf(lines: OcrLine[]): ReceiptLayout {
+interface Analysis {
+  layout: ReceiptLayout;
+  angle: number;
+  guides: ColumnGuide[] | null;
+  /** The bottom of the printed headings, in level coordinates. */
+  headBottom: number;
+  fields: LabelledField[];
+}
+
+function analyse(lines: OcrLine[]): Analysis {
   const angle = skewOf(lines);
-  const rows = clusterRows(tokensOf(lines, angle));
-  const heading = headingRow(rows);
-  const receiptNo = findReceiptNo(rows, lines);
-  const date = findDate(rows);
+  const tokens = tokensOf(lines, angle);
+  let rows = clusterRows(tokens);
+  let heading = headingRow(rows);
+  let receiptNo = findReceiptNo(rows, lines);
+  let receiptNoGuessed = false;
+  if (!receiptNo) {
+    receiptNo = lonelyReceiptNo(tokens, lines, heading ? rows[heading.index].v : Infinity);
+    receiptNoGuessed = !!receiptNo;
+  }
+
+  // The labelled fields at the top. Neither their labels nor their values become item rows.
+  const byLine = wordsByLine(tokens);
+  const taken = new Set<Token>([...(heading ? rows[heading.index].tokens : []), ...(receiptNo?.tokens ?? [])]);
+  const notItems = new Set<Token>(receiptNoGuessed ? (receiptNo?.tokens ?? []) : []);
+  const take = (field: LabelledField | null) => {
+    for (const t of [...(field?.label ?? []), ...(field?.value?.tokens ?? [])]) {
+      taken.add(t);
+      notItems.add(t);
+    }
+  };
+  const dateField = findLabelled(byLine, dateLabel, taken);
+  take(dateField);
+  const nameField = findLabelled(byLine, registeredNameLabel, taken);
+  take(nameField);
+  const date = dateField?.value ?? dateAnywhere(rows);
+
+  // Lines drawn to void the empty rows aren't read as numbers.
+  if (heading) {
+    const headRow = rows[heading.index];
+    const textHeight = median(headRow.tokens.map((t) => t.bottom - t.top));
+    for (const t of tokens) if (t.v > headRow.v && isVoidStroke(t, heading.guides, textHeight)) notItems.add(t);
+  }
+  if (notItems.size > 0) {
+    rows = clusterRows(tokens.filter((t) => !notItems.has(t)));
+    heading = headingRow(rows);
+  }
+
   const layoutRows: LayoutRow[] = [];
   let total: Cell | null = null;
 
@@ -509,6 +819,7 @@ export function layoutOf(lines: OcrLine[]): ReceiptLayout {
       const row = rows[i];
       if (findPhrases(row, TOTAL_LABELS, 0.6).length > 0 || rowHas(row, FOOTER_WORDS)) break;
       const read = rowFromColumns(row, heading.guides);
+      if (isSpeck(read)) continue;
       const { qty, unitPrice, amount, item } = read.cells;
       const previous = layoutRows[layoutRows.length - 1];
       if (!qty && !unitPrice && !amount && item && previous) {
@@ -533,15 +844,121 @@ export function layoutOf(lines: OcrLine[]): ReceiptLayout {
     for (const row of rows) {
       if (findPhrases(row, TOTAL_LABELS, 0.6).length > 0) continue;
       const read = rowFromPattern(row);
-      if (read) layoutRows.push(read);
+      if (read && !isSpeck(read)) layoutRows.push(read);
     }
   }
   return {
-    method: heading ? 'headers' : 'lines',
-    skew: (angle * 180) / Math.PI,
-    rows: layoutRows,
-    receiptNo,
-    date,
-    total,
+    layout: {
+      method: heading ? 'headers' : 'lines',
+      skew: (angle * 180) / Math.PI,
+      rows: layoutRows,
+      receiptNo,
+      receiptNoGuessed,
+      date,
+      registeredName: nameField?.value ?? null,
+      total,
+    },
+    angle,
+    guides: heading?.guides ?? null,
+    headBottom: heading ? Math.max(...rows[heading.index].tokens.map((t) => t.bottom)) : -Infinity,
+    fields: [dateField, nameField].filter((f): f is LabelledField => !!f),
   };
+}
+
+export function layoutOf(lines: OcrLine[]): ReceiptLayout {
+  return analyse(lines).layout;
+}
+
+// --- A second, closer look --------------------------------------------------
+
+/** Columns whose empty cell, in a row that has writing, is worth reading on its own. */
+export type LookColumn = Exclude<Column, 'unit'>;
+
+/**
+ * Places worth reading again on their own, cut closer than the detector cut
+ * them. Handwriting read in the same line as a printed label ("Registered
+ * Name : Juan Dela Cruz") is read badly, because the line's height is set for both
+ * and the reader follows the print; on its own it reads well. A short mark the
+ * detector missed altogether (the "1" under QUANTITY) is often read when just
+ * its cell is cut out.
+ */
+export interface SecondLook {
+  /**
+   * Line `line` holds a label and its value: keep its first `keep` words (the
+   * label; of the last one only its first `cut` characters when the value was
+   * read into it), and read `quad` for the value.
+   */
+  splits: { line: number; keep: number; cut?: number; quad: Quad }[];
+  /** Empty cells of item rows that have other writing, to read on their own. */
+  cells: { column: LookColumn; quad: Quad }[];
+}
+
+/** A rectangle in level coordinates, turned back into the photo and kept inside it. */
+function photoQuad(angle: number, image: { width: number; height: number }, left: number, top: number, right: number, bottom: number): Quad {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const at = (u: number, v: number): Point => ({
+    x: Math.min(image.width, Math.max(0, u * cos - v * sin)),
+    y: Math.min(image.height, Math.max(0, u * sin + v * cos)),
+  });
+  return [at(left, top), at(right, top), at(right, bottom), at(left, bottom)];
+}
+
+export function secondLookOf(lines: OcrLine[], image: { width: number; height: number }): SecondLook {
+  const { layout, angle, guides, headBottom, fields } = analyse(lines);
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  const look: SecondLook = { splits: [], cells: [] };
+
+  // A label and its handwriting read as one line: the handwriting after the label, a little taller.
+  for (const field of fields) {
+    const last = field.label[field.label.length - 1];
+    const value = field.value?.tokens ?? [];
+    if (value.length === 0 || value.some((t) => t.line !== last.line) || (field.glued && !field.cut)) continue;
+    // The whole line the detector found: the reader may have stopped short of the end of the writing (a name cut off after its first few letters).
+    const quad = lines[last.line].quad;
+    const us = quad.map((p) => p.x * cos + p.y * sin);
+    const vs = quad.map((p) => -p.x * sin + p.y * cos);
+    const top = Math.min(...vs);
+    const bottom = Math.max(...vs);
+    const height = bottom - top;
+    // Where the label ends: after its last word, or inside it when the value was read into it ("Name:Pedro").
+    let labelEnd = last.right;
+    let cut: number | undefined;
+    if (field.glued && field.cut) {
+      cut = field.cut;
+      const word = lines[last.line].words[last.word];
+      const at = word?.at;
+      if (at && at.length === word.text.length && cut < at.length) {
+        const p = framePoint(quad, (at[cut - 1] + at[cut]) / 2, 0.5);
+        labelEnd = p.x * cos + p.y * sin;
+      } else {
+        labelEnd = last.left + ((last.right - last.left) * cut) / Math.max(1, last.text.length);
+      }
+    }
+    look.splits.push({
+      line: last.line,
+      keep: last.word + 1,
+      ...(cut ? { cut } : {}),
+      quad: photoQuad(angle, image, labelEnd + 0.15 * height, top - 0.15 * height, Math.max(...us, ...value.map((t) => t.right)) + 0.5 * height, bottom + 0.1 * height),
+    });
+  }
+
+  // Empty cells of rows that have writing: under the cell's heading, as tall as the row's writing and a little more.
+  if (guides && layout.method === 'headers') {
+    for (const row of layout.rows) {
+      const tokens = Object.values(row.cells).flatMap((cell) => cell?.tokens ?? []);
+      if (tokens.length === 0) continue;
+      const top = Math.min(...tokens.map((t) => t.top));
+      const bottom = Math.max(...tokens.map((t) => t.bottom));
+      const pad = 0.1 * (bottom - top);
+      // Never up into the printed headings.
+      const from = Math.max(top - pad, headBottom + 1);
+      for (const guide of guides) {
+        if (guide.column === 'unit' || row.cells[guide.column]) continue;
+        look.cells.push({ column: guide.column, quad: photoQuad(angle, image, guide.left, from, guide.right, bottom - pad) });
+      }
+    }
+  }
+  return look;
 }

@@ -41,7 +41,29 @@ export function ocrLine(text: string, x: number, y: number, options: { angle?: n
   };
 }
 
-const cylinder = (id: string, name: string, brand: string, sizeKg: number, refill: number, price: number): Product => ({
+/**
+ * A line as the reader returned it on a real photo: its text, confidence and
+ * box (x, y, width, height in photo pixels). Its words share the box's width
+ * by their number of characters.
+ */
+export function boxLine(text: string, confidence: number, [x, y, width, height]: [number, number, number, number]): OcrLine {
+  const charWidth = width / text.length;
+  const words: OcrText[] = [];
+  let offset = 0;
+  for (const word of text.split(' ')) {
+    if (word) words.push({ text: word, confidence, rect: { x: x + offset * charWidth, y, width: word.length * charWidth, height } });
+    offset += word.length + 1;
+  }
+  const quad: Quad = [
+    { x, y },
+    { x: x + width, y },
+    { x: x + width, y: y + height },
+    { x, y: y + height },
+  ];
+  return { text, confidence, quad, rect: { x, y, width, height }, words };
+}
+
+export const cylinder = (id: string, name: string, brand: string, sizeKg: number, refill: number, price: number): Product => ({
   id,
   sku: id.toUpperCase(),
   name,

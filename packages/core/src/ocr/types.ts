@@ -37,6 +37,13 @@ export interface OcrText {
   /** Average probability of the characters read, from 0 to 1. */
   confidence: number;
   rect: Rect;
+  /**
+   * Where each character was read, as a fraction (0–1) of the way across the
+   * line's reading frame: one entry per character of `text`. Set on the words
+   * of a line read by the recogniser, so a label and a value read as one word
+   * ("Name:Pedro") can be told apart.
+   */
+  at?: number[];
 }
 
 /** One line found by the detector and read by the recogniser. */
@@ -109,12 +116,16 @@ export interface DraftLine {
   rect: Rect;
 }
 
-/** What the app read from a receipt photo, ready for the cashier to review. Nothing is saved from it directly. */
+/** What the app read from a receipt photo, ready for the cashier to review. Nothing is saved until the cashier presses Save. */
 export interface ReceiptDraft {
   /** The receipt booklet's printed serial number. */
   receiptNo: DraftField<string>;
   /** Day written on the receipt, YYYY-MM-DD. */
   date: DraftField<string>;
+  /** Time written by the date, 24-hour "HH:MM"; missing when none was written. */
+  time: DraftField<string>;
+  /** The name written after "Registered Name:", as written. */
+  registeredName: DraftField<string>;
   /** The written total. */
   total: DraftField<Centavos>;
   lines: DraftLine[];

@@ -46,7 +46,7 @@ export function allowedClasses(characters: string[], charset: ReadOptions['chars
   return allowed;
 }
 
-interface DecodedChar {
+export interface DecodedChar {
   text: string;
   /** Output position (time step) where the character was read. */
   step: number;
@@ -111,7 +111,7 @@ interface PendingLine {
   index: number;
 }
 
-/** Cuts out and reads every box. Lines come back in the boxes' order, each with its words' positions. */
+/** Cuts out and reads every box. Lines come back in the boxes' order, each with its words' positions; boxes with nothing in them are left out. */
 export async function readLines(
   image: PixelImage,
   boxes: TextBox[],
@@ -119,6 +119,17 @@ export async function readLines(
   config: RecConfig,
   options: ReadOptions = DEFAULT_READ_OPTIONS,
 ): Promise<OcrLine[]> {
+  return (await readBoxes(image, boxes, runtime, config, options)).filter((line): line is OcrLine => line !== null);
+}
+
+/** Like readLines, but one result per box, in the boxes' order: null where nothing was read. */
+export async function readBoxes(
+  image: PixelImage,
+  boxes: TextBox[],
+  runtime: OcrRuntime,
+  config: RecConfig,
+  options: ReadOptions = DEFAULT_READ_OPTIONS,
+): Promise<(OcrLine | null)[]> {
   const height = config.height;
   const allowed = allowedClasses(config.characters, options.charset);
   const pending: PendingLine[] = boxes.map((box, index) => {
@@ -147,7 +158,7 @@ export async function readLines(
       results[line.index] = toOcrLine(decoded, line.frame, line.width, batchWidth / steps);
     });
   }
-  return results.filter((line): line is OcrLine => line !== null && line.text.trim() !== '');
+  return results.map((line) => (line && line.text.trim() !== '' ? line : null));
 }
 
 /**
@@ -170,32 +181,61 @@ function batchesByWidth(lines: PendingLine[], size: number, minWidth: number): P
 }
 
 /**
+ * Where the recogniser left out a space: a gap between two characters at
+ * least this many times the usual gap between characters of the line. The
+ * recogniser often runs handwritten words together ("LizaRamos") and printed
+ * column headings that the detector put in one box ("SERVICEQUANTITY").
+ */
+export const WORD_GAP = { ratio: 2.4, minSteps: 3 };
+
+/** Splits the characters into words at spaces, and at gaps much wider than the line's usual gap between characters. */
+export function wordsOf(chars: DecodedChar[]): DecodedChar[][] {
+  const gaps: number[] = [];
+  for (let i = 1; i < chars.length; i += 1) {
+    if (chars[i].text.trim() !== '' && chars[i - 1].text.trim() !== '') gaps.push(chars[i].step - chars[i - 1].step);
+  }
+  const sorted = gaps.slice().sort((a, b) => a - b);
+  const usual = sorted.length >= 3 ? sorted[Math.floor(sorted.length / 2)] : Infinity;
+  const words: DecodedChar[][] = [];
+  let current: DecodedChar[] = [];
+  chars.forEach((char, i) => {
+    if (char.text.trim() === '') {
+      if (current.length > 0) words.push(current);
+      current = [];
+      return;
+    }
+    const previous = chars[i - 1];
+    const gap = previous && previous.text.trim() !== '' ? char.step - previous.step : 0;
+    if (current.length > 0 && gap >= WORD_GAP.minSteps && gap >= WORD_GAP.ratio * usual) {
+      words.push(current);
+      current = [];
+    }
+    current.push(char);
+  });
+  if (current.length > 0) words.push(current);
+  return words;
+}
+
+/**
  * Places the decoded characters back on the photo. Each output step covers a
  * fixed slice of the recogniser's input (`pixelsPerStep`), so a word's first and
  * last characters tell where along the line it sits.
  */
 function toOcrLine(decoded: DecodedLine, frame: Quad, width: number, pixelsPerStep: number): OcrLine {
-  const words: OcrText[] = [];
-  let current: DecodedChar[] = [];
-  const flush = () => {
-    if (current.length === 0) return;
+  const at = (step: number) => ((step + 0.5) * pixelsPerStep) / width;
+  const words: OcrText[] = wordsOf(decoded.chars).map((chars) => {
     // A character's peak sits inside it, so pad a step either side to cover the whole word.
-    const from = Math.max(0, ((current[0].step - 0.5) * pixelsPerStep) / width);
-    const to = Math.min(1, ((current[current.length - 1].step + 1.5) * pixelsPerStep) / width);
-    words.push({
-      text: current.map((c) => c.text).join(''),
-      confidence: current.reduce((sum, c) => sum + c.prob, 0) / current.length,
+    const from = Math.max(0, ((chars[0].step - 0.5) * pixelsPerStep) / width);
+    const to = Math.min(1, ((chars[chars.length - 1].step + 1.5) * pixelsPerStep) / width);
+    return {
+      text: chars.map((c) => c.text).join(''),
+      confidence: chars.reduce((sum, c) => sum + c.prob, 0) / chars.length,
       rect: boundsOf([framePoint(frame, from, 0), framePoint(frame, to, 0), framePoint(frame, to, 1), framePoint(frame, from, 1)]),
-    });
-    current = [];
-  };
-  for (const char of decoded.chars) {
-    if (char.text.trim() === '') flush();
-    else current.push(char);
-  }
-  flush();
+      at: chars.map((c) => Math.min(1, at(c.step))),
+    };
+  });
   return {
-    text: decoded.text.trim(),
+    text: words.map((w) => w.text).join(' '),
     confidence: decoded.confidence,
     quad: frame,
     rect: boundsOf(frame),

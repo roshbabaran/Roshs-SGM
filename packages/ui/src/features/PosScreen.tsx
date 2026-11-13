@@ -7,7 +7,6 @@ import {
   changeDiscount,
   changeQty,
   changeType,
-  checkSlipNo,
   describeDiscount,
   describeSet,
   discountLabel,
@@ -53,7 +52,6 @@ import { useKeyboardShortcuts } from '../useKeyboardShortcuts';
 import { CustomerField, CustomerPickerDialog } from './CustomerPicker';
 import { DiscountDialog } from './DiscountDialog';
 import { PaymentDialog } from './PaymentDialog';
-import { ReceiptScanDialog, type ScannedSale } from './ReceiptScanDialog';
 import { ReceiptDialog } from './receipts';
 
 type Section = 'all' | ProductKind | 'set';
@@ -72,11 +70,10 @@ const MIN_CARD_WIDTH = 200;
  * The counter screen: pick products or sets, choose refill or new cylinder, take payment, print.
  * A sale can name its customer (their standing discount applies), give a discount on a line
  * (pos.discount), or be prepaid for picking up later in the Claims window.
- * Where the device can read receipts, a handwritten receipt can be scanned into the cart instead.
  */
 export function PosScreen() {
   const work = useWork();
-  const { ocr, platform } = useServices();
+  const { platform } = useServices();
   const toast = useToast();
   const { isWide, isLandscape, width, height } = useBreakpoint();
   // A phone on its side gets the desktop layout: products on the left, the sale on the right.
@@ -94,9 +91,6 @@ export function PosScreen() {
   const [query, setQuery] = useState('');
   const [section, setSection] = useState<Section>('all');
   const [paying, setPaying] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  /** The number of the handwritten receipt the cart was scanned from. */
-  const [slipNo, setSlipNo] = useState<string | null>(null);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [gridWidth, setGridWidth] = useState(0);
   const searchRef = useRef<TextInput>(null);
@@ -146,11 +140,8 @@ export function PosScreen() {
     return `A new ${product} also takes an empty cylinder from the shelf, and ${where} has ${shortage.available} left.`;
   };
 
-  /** Every change to the cart comes through here. An emptied cart forgets the scanned receipt. */
-  const replaceCart = (next: CartLine[]) => {
-    setCart(next);
-    if (next.length === 0) setSlipNo(null);
-  };
+  /** Every change to the cart comes through here. */
+  const replaceCart = (next: CartLine[]) => setCart(next);
 
   /** A new sale starts with no customer and not prepaid. */
   const clearSale = () => {
@@ -204,24 +195,10 @@ export function PosScreen() {
   };
 
   const complete = async (payment: Payment) => {
-    const sale = await recordSale(work.ctx, { cart: lines, payment, slipNo: slipNo ?? undefined, customer: customer ?? undefined, prepaid });
+    const sale = await recordSale(work.ctx, { cart: lines, payment, customer: customer ?? undefined, prepaid });
     clearSale();
     setPaying(false);
     setLastSale(sale);
-  };
-
-  /**
-   * The lines the cashier confirmed from a scanned receipt become the cart. A
-   * receipt number that was already entered is caught here, while the dialog
-   * still lets the cashier correct it.
-   */
-  const applyScan = async (scanned: ScannedSale) => {
-    const shortage = shortagesOf(scanned.cart)[0];
-    if (shortage) throw new Error(stockMessage(shortage));
-    if (scanned.slipNo) await checkSlipNo(work.ctx, scanned.slipNo);
-    replaceCart(scanned.cart);
-    setSlipNo(scanned.slipNo ?? null);
-    setScanning(false);
   };
 
   const finishReceipt = () => {
@@ -235,7 +212,7 @@ export function PosScreen() {
       F4: clearSale,
       F9: charge,
     },
-    !paying && !lastSale && !scanning && !choosingCustomer && !discounting,
+    !paying && !lastSale && !choosingCustomer && !discounting,
   );
 
   const catalog = (
@@ -323,7 +300,6 @@ export function PosScreen() {
       priced={priced}
       products={byId}
       total={total}
-      slipNo={lines.length > 0 ? slipNo : null}
       saleFor={saleFor}
       prepaid={prepaid}
       onDiscount={canDiscount ? setDiscounting : undefined}
@@ -343,15 +319,10 @@ export function PosScreen() {
         title="Sell"
         subtitle={[work.location?.name, work.user?.displayName].filter(Boolean).join(' · ')}
         actions={
-          Platform.OS === 'web' || ocr ? (
-            <>
-              {Platform.OS === 'web' ? (
-                <Text variant="small" muted>
-                  F2 search · F4 clear · F9 charge
-                </Text>
-              ) : null}
-              {ocr ? <Button title="Scan receipt" icon="scan-outline" variant="secondary" size="sm" onPress={() => setScanning(true)} /> : null}
-            </>
+          Platform.OS === 'web' ? (
+            <Text variant="small" muted>
+              F2 search · F4 clear · F9 charge
+            </Text>
           ) : null
         }
       />
@@ -391,16 +362,6 @@ export function PosScreen() {
           current={discounting.discount}
           onApply={(discount) => setDiscount(discounting, discount)}
           onClose={() => setDiscounting(null)}
-        />
-      ) : null}
-      {ocr ? (
-        <ReceiptScanDialog
-          visible={scanning}
-          products={products.filter((p) => p.active)}
-          sets={Array.from(setsById.values()).filter((set) => set.active)}
-          replacing={lines.length > 0}
-          onCancel={() => setScanning(false)}
-          onConfirm={applyScan}
         />
       ) : null}
       <ReceiptDialog sale={lastSale} onClose={finishReceipt} closeLabel="New sale" />
@@ -555,7 +516,6 @@ function CartPanel({
   priced,
   products,
   total,
-  slipNo,
   saleFor,
   prepaid,
   onDiscount,
@@ -570,8 +530,6 @@ function CartPanel({
   priced: SaleLine[];
   products: Map<string, Product>;
   total: number;
-  /** Shown when the cart was scanned from a handwritten receipt. */
-  slipNo: string | null;
   /** The customer and the prepaid box. */
   saleFor: ReactNode;
   prepaid: boolean;
@@ -594,7 +552,6 @@ function CartPanel({
       style={maxHeight === undefined ? styles.cartWide : { maxHeight }}
     >
       {saleFor}
-      {slipNo ? <Badge label={`From receipt no. ${slipNo}`} tone="info" icon="receipt-outline" /> : null}
       <ScrollView style={maxHeight === undefined ? styles.cartLines : styles.cartLinesStacked} contentContainerStyle={styles.cartLinesContent}>
         {lines.length === 0 ? (
           dense ? (

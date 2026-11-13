@@ -48,10 +48,13 @@ export function checkLine(fields: LineFields, listPrice: Centavos | null): void 
   const { qty, unitPrice, amount } = fields;
 
   // Fill in what wasn't written or couldn't be read.
+  // No quantity: the amount over the written unit price, else over SGM's price, else 1.
   if (qty.value === null) {
-    const fromAmount =
-      amount.value !== null ? (unitPrice.value !== null ? quotient(amount.value, unitPrice.value) : listPrice ? quotient(amount.value, listPrice) : null) : null;
-    if (fromAmount !== null) set(qty, fromAmount, 'Worked out from the amount and the price.');
+    const a = amount.value;
+    const fromWritten = a !== null && unitPrice.value !== null ? quotient(a, unitPrice.value) : null;
+    const fromList = a !== null && listPrice ? quotient(a, listPrice) : null;
+    if (fromWritten !== null) set(qty, fromWritten, 'Not written; worked out from the amount and the unit price.');
+    else if (fromList !== null) set(qty, fromList, "Not written; worked out from the amount and SGM's price.");
     else set(qty, 1, 'No quantity found, so it was set to 1.');
   }
   if (unitPrice.value === null) {
@@ -68,14 +71,14 @@ export function checkLine(fields: LineFields, listPrice: Centavos | null): void 
   const a = amount.value;
   if (q === null || u === null || a === null || q * u === a) return;
 
+  // The amount agrees with the price list, so the written unit price is the odd one out ("280" read as "2.80").
+  if (listPrice !== null && u !== listPrice && q * listPrice === a) {
+    set(unitPrice, listPrice, `Read as ${formatPeso(u)}; the amount and SGM's price say ${formatPeso(listPrice)}.`);
+    return;
+  }
   // "980⁰⁰" read as 98000: the amount carries the cents twice.
   if (a === q * u * 100) {
     set(amount, q * u, `Read as ${formatPeso(a)}; quantity × price is ${formatPeso(q * u)}.`);
-    return;
-  }
-  // The amount agrees with the price list, so the written unit price is the odd one out.
-  if (listPrice !== null && u !== listPrice && q * listPrice === a) {
-    set(unitPrice, listPrice, `Read as ${formatPeso(u)}; the amount and SGM's price say ${formatPeso(listPrice)}.`);
     return;
   }
   const qtyFromAmount = quotient(a, u);
