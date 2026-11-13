@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
-import { IPC, type SgmBridge } from './bridge';
+import { IPC, type SgmBridge, type UpdateDownload } from './bridge';
 
 /**
  * Calls the main process. Electron puts "Error invoking remote method '…': Error: "
@@ -36,6 +36,22 @@ const bridge: SgmBridge = {
     check: () => invoke(IPC.updatesCheck),
     ready: () => invoke(IPC.updatesReady),
     install: (token) => invoke(IPC.updatesInstall, token),
+    watchDownload: (listener) => {
+      let moved = false;
+      const onChange = (_event: unknown, download: UpdateDownload | null) => {
+        moved = true;
+        listener(download);
+      };
+      ipcRenderer.on(IPC.updatesDownloadChanged, onChange);
+      // Where it is now, unless the download has already moved on by the time the answer comes.
+      invoke<UpdateDownload | null>(IPC.updatesDownload).then(
+        (download) => !moved && listener(download),
+        () => undefined,
+      );
+      return () => {
+        ipcRenderer.removeListener(IPC.updatesDownloadChanged, onChange);
+      };
+    },
   },
   backups: {
     info: () => invoke(IPC.backupsInfo),

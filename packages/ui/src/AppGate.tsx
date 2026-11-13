@@ -14,6 +14,7 @@ import { DeviceIdField } from './DeviceIdField';
 import { useServices } from './services-context';
 import { Text } from './Text';
 import { TextField } from './TextField';
+import { UpdateProgress } from './UpdateProgress';
 import { radius, spacing, useTheme } from './theme';
 import { useZodForm } from './useZodForm';
 
@@ -114,9 +115,12 @@ export function AppGate({ children }: { children: ReactNode }) {
       {children}
       {newVersion ? (
         <View style={[styles.banner, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={styles.bannerText}>{note ?? `${appName} ${newVersion} is ready to install.`}</Text>
-          <Button title="Update" icon="download-outline" size="sm" onPress={install} loading={installing} />
-          <Button title="Later" variant="ghost" size="sm" onPress={() => setNewVersion(null)} />
+          <View style={styles.bannerRow}>
+            <Text style={styles.bannerText}>{note ?? `${appName} ${newVersion} is ready to install.`}</Text>
+            <Button title="Update" icon="download-outline" size="sm" onPress={install} loading={installing} />
+            <Button title="Later" variant="ghost" size="sm" onPress={() => setNewVersion(null)} />
+          </View>
+          <UpdateProgress />
         </View>
       ) : null}
     </View>
@@ -179,7 +183,9 @@ function UpdateNow() {
     try {
       const fresh = await api.updateLogin(username, pin, deviceId);
       setSignIn(fresh);
-      form.set('pin', '');
+      // Clear the PIN without checking the form again: an empty PIN after a good sign-in isn't a mistake, and
+      // set() would show "PIN must be 4 to 8 digits" under it while the update downloads.
+      form.reset({ username, pin: '' });
       await install(fresh.token);
     } catch (e) {
       setError(message(e));
@@ -193,6 +199,7 @@ function UpdateNow() {
     return (
       <>
         <Button title="Update now" icon="download-outline" onPress={() => void start()} loading={busy} />
+        <UpdateProgress style={styles.progress} />
         {error ? <Banner tone="danger">{error}</Banner> : null}
         {note ? (
           <Text muted align="center">
@@ -230,6 +237,7 @@ function UpdateNow() {
         returnKeyType="go"
         onSubmitEditing={signInAndUpdate}
       />
+      <UpdateProgress />
       {error ? <Banner tone="danger">{error}</Banner> : null}
       {needsApproval ? <DeviceIdField /> : null}
       <Button title="Sign in and update" icon="download-outline" onPress={signInAndUpdate} loading={busy} fullWidth />
@@ -241,14 +249,13 @@ function UpdateNow() {
 const styles = StyleSheet.create({
   root: { flex: 1 },
   signIn: { width: '100%', maxWidth: 360, gap: spacing.md },
+  progress: { maxWidth: 360 },
   blocked: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.md, padding: spacing.xl },
   banner: {
     position: 'absolute',
     left: spacing.lg,
     right: spacing.lg,
     bottom: spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: spacing.sm,
     padding: spacing.md,
     borderWidth: 1,
@@ -256,5 +263,6 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     maxWidth: 560,
   },
+  bannerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   bannerText: { flex: 1 },
 });

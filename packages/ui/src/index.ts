@@ -17,6 +17,7 @@ export * from './SidebarLayout';
 export * from './SyncStatusBadge';
 export * from './Text';
 export * from './TextField';
+export * from './UpdateProgress';
 export * from './theme';
 export * from './Toast';
 export * from './useBreakpoint';

@@ -10,6 +10,8 @@ import { autoUpdater, type UpdateCheckResult } from 'electron-updater';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import type { UpdateDownload } from './bridge';
+
 /** How often the screens' polling (updateReady) may start a new check. */
 const CHECK_EVERY_MS = 30 * 60_000;
 
@@ -17,6 +19,18 @@ let token: () => string | null = () => null;
 let readyVersion: string | null = null;
 let installWhenReady = false;
 let lastCheckAt = 0;
+let download: UpdateDownload | null = null;
+let onDownload: (download: UpdateDownload | null) => void = () => undefined;
+
+function reportDownload(next: UpdateDownload | null): void {
+  download = next;
+  onDownload(next);
+}
+
+/** The update being downloaded, for the progress bars; null when none is. */
+export function currentDownload(): UpdateDownload | null {
+  return download;
+}
 
 /** app-update.yml is written into installed copies by electron-builder's publish setting. */
 function updatesConfigured(): boolean {
@@ -24,15 +38,37 @@ function updatesConfigured(): boolean {
 }
 
 /** Points the updater at the SGM API and checks once now. */
-export function startUpdates(options: { apiUrl: string; token: () => string | null }): void {
+export function startUpdates(options: {
+  apiUrl: string;
+  token: () => string | null;
+  /** Told as an update download starts, moves and ends (null), so the screens can show how far along it is. */
+  onDownload?: (download: UpdateDownload | null) => void;
+}): void {
   token = options.token;
+  onDownload = options.onDownload ?? onDownload;
   if (!updatesConfigured()) return;
   if (options.apiUrl) autoUpdater.setFeedURL({ provider: 'generic', url: `${options.apiUrl.replace(/\/+$/, '')}/updates/desk` });
+  // A newer version was found, and electron-updater starts downloading it.
+  autoUpdater.on('update-available', (info) => {
+    if (!readyVersion) reportDownload({ version: info.version, received: 0, total: null });
+  });
+  // Also sent while only the changed parts are downloaded, with the size of those parts as the total.
+  autoUpdater.on('download-progress', (progress) => {
+    reportDownload({
+      version: download?.version ?? null,
+      received: progress.transferred,
+      total: progress.total > 0 ? progress.total : null,
+    });
+  });
   autoUpdater.on('update-downloaded', (info) => {
     readyVersion = info.version;
+    reportDownload(null);
     if (installWhenReady) autoUpdater.quitAndInstall(true, true);
   });
-  autoUpdater.on('error', (error) => console.warn('Update failed:', error));
+  autoUpdater.on('error', (error) => {
+    reportDownload(null);
+    console.warn('Update failed:', error);
+  });
   void quietCheck();
 }
 

@@ -18,7 +18,7 @@ import { openLocalDb } from './local-db';
 import { checkPixels, createOcrReader } from './ocr';
 import { listPrinters, printDocument, printReceipt } from './printing';
 import { createSecureStore } from './secure-store';
-import { checkForUpdates, installUpdate, startUpdates, updateReady } from './updates';
+import { checkForUpdates, currentDownload, installUpdate, startUpdates, updateReady } from './updates';
 
 /** Set by scripts/dev.mjs while developing; ignored by the installed app. */
 const devServerUrl = !app.isPackaged ? (process.env.SGM_DEV_SERVER_URL ?? null) : null;
@@ -127,6 +127,7 @@ function start(): void {
   handle(IPC.updatesCheck, () => checkForUpdates());
   handle(IPC.updatesReady, () => updateReady());
   handle(IPC.updatesInstall, ([token]) => installUpdate(typeof token === 'string' && token.length < 2000 ? token : undefined));
+  handle(IPC.updatesDownload, () => currentDownload());
 
   handle(IPC.backupsInfo, () => {
     requireBackupRights();
@@ -146,7 +147,11 @@ function start(): void {
 
   if (!devServerUrl) Menu.setApplicationMenu(null);
   createWindow();
-  startUpdates({ apiUrl, token: () => currentSession()?.token ?? null });
+  startUpdates({
+    apiUrl,
+    token: () => currentSession()?.token ?? null,
+    onDownload: (download) => mainWindow?.webContents.send(IPC.updatesDownloadChanged, download),
+  });
   backups.startWeekly();
 }
 

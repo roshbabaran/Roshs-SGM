@@ -22,6 +22,7 @@ import { Select } from '../Select';
 import { useServices, useSyncStatus, useWork, type AppServices, type BackupInfo, type PrinterInfo } from '../services';
 import { SyncStatusBadge } from '../SyncStatusBadge';
 import { Text } from '../Text';
+import { UpdateProgress } from '../UpdateProgress';
 import { spacing } from '../theme';
 import { useToast } from '../Toast';
 
@@ -269,6 +270,7 @@ export function SettingsScreen() {
               <View style={styles.actions}>
                 <Button title="Check for updates" icon="download-outline" variant="secondary" onPress={checkUpdates} loading={checking} />
               </View>
+              <UpdateProgress />
               {updateMessage ? <Text muted>{updateMessage}</Text> : null}
             </>
           ) : null}

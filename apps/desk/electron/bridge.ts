@@ -11,6 +11,13 @@ export interface PrinterInfo {
   description?: string;
 }
 
+/** An update being downloaded (electron/updates.ts), for the progress bars. */
+export interface UpdateDownload {
+  version: string | null;
+  received: number;
+  total: number | null;
+}
+
 /** The backups made on this PC (electron/backups.ts). */
 export interface BackupInfo {
   folder: string;
@@ -50,6 +57,11 @@ export interface SgmBridge {
      * sign-in from /updates/login, for when nobody is signed in.
      */
     install(token?: string): Promise<string>;
+    /**
+     * Calls `listener` with the download in progress, straight away and then as it moves, and with null when none
+     * is. Returns a function that stops listening.
+     */
+    watchDownload(listener: (download: UpdateDownload | null) => void): () => void;
   };
   /** Weekly and on-demand copies of the local database. Only for the owner and admins (backups.manage). */
   backups: {
@@ -78,6 +90,10 @@ export const IPC = {
   updatesCheck: 'sgm:updates-check',
   updatesReady: 'sgm:updates-ready',
   updatesInstall: 'sgm:updates-install',
+  /** Asks for the download in progress. */
+  updatesDownload: 'sgm:updates-download',
+  /** Sent by the main process as the download moves. */
+  updatesDownloadChanged: 'sgm:updates-download-changed',
   backupsInfo: 'sgm:backups-info',
   backupsCreate: 'sgm:backups-create',
   backupsOpen: 'sgm:backups-open',

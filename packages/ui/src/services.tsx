@@ -82,6 +82,16 @@ export interface ReceiptScanner {
   readText(image: PixelImage): Promise<TextResult>;
 }
 
+/** An update being downloaded, for the progress bar (UpdateProgress). */
+export interface UpdateDownload {
+  /** The version on its way, when known. */
+  version: string | null;
+  /** Bytes received so far. */
+  received: number;
+  /** The whole download in bytes, or null when the server didn't say. */
+  total: number | null;
+}
+
 /** Where this device keeps its backups, how many there are and when the newest was made. */
 export interface BackupInfo {
   folder: string;
@@ -111,6 +121,11 @@ export interface PlatformServices {
      * Without `token`, a sign-in from api.updateLogin, it needs someone signed in.
      */
     install(token?: string): Promise<string>;
+    /**
+     * Calls `listener` with the download in progress, straight away and then as it moves, and with null when no
+     * update is downloading. Returns a function that stops listening.
+     */
+    watchDownload?(listener: (download: UpdateDownload | null) => void): () => void;
   };
   /** Copies of this device's data, weekly and on demand (SGM Desk only; needs backups.manage). */
   backups?: {
