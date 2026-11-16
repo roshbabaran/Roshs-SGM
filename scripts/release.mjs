@@ -56,9 +56,10 @@ function checkDeskBuild(dir, installer, version) {
   if (existsSync(installer) && statSync(installer).mtimeMs < statSync(asarFile).mtimeMs) {
     fail('The installer is older than the packed app. Run "npm run desk:dist" again.');
   }
-  const files = asar.listPackage(asarFile).map((f) => f.replaceAll('\\', '/').replace(/^\//, ''));
+  // listPackage gives paths with the platform's separator, which extractFile also expects.
+  const files = asar.listPackage(asarFile).map((f) => f.replace(/^[\\/]/, ''));
   const uses = (file) => asar.extractFile(asarFile, file).toString('utf8').includes(API_URL);
-  const screens = files.filter((f) => f.startsWith('renderer/') && f.endsWith('.js'));
+  const screens = files.filter((f) => /^renderer[\\/].*\.js$/.test(f));
   if (!uses('main.js') || !screens.some(uses)) {
     fail(`SGM Desk ${version} isn't built for ${API_URL}, so it would run on the demo server. Not uploading.`);
   }
