@@ -2,7 +2,7 @@
   "expo": {
     "name": "SGM Desk",
     "slug": "sgm-desk",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "platforms": ["web"],
     "userInterfaceStyle": "automatic",
     "scheme": "sgmdesk",
